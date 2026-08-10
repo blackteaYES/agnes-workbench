@@ -589,8 +589,10 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
   overlay.innerHTML = `
     <div class="preview-stage">
       <button class="icon-button small preview-close" type="button" data-preview-action="close" aria-label="关闭预览" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
-      <div class="preview-media-slot"></div>
-      ${navVisible ? '<button class="preview-nav preview-nav-prev" type="button" data-preview-action="prev" aria-label="上一张" data-tooltip="上一张"><i data-lucide="chevron-left" aria-hidden="true"></i></button><button class="preview-nav preview-nav-next" type="button" data-preview-action="next" aria-label="下一张" data-tooltip="下一张"><i data-lucide="chevron-right" aria-hidden="true"></i></button>' : ''}
+      <div class="preview-media-frame">
+        <div class="preview-media-slot"></div>
+        ${navVisible ? '<button class="preview-nav preview-nav-prev" type="button" data-preview-action="prev" aria-label="上一张" data-tooltip="上一张"><i data-lucide="chevron-left" aria-hidden="true"></i></button><button class="preview-nav preview-nav-next" type="button" data-preview-action="next" aria-label="下一张" data-tooltip="下一张"><i data-lucide="chevron-right" aria-hidden="true"></i></button>' : ''}
+      </div>
       <div class="preview-bar">
         <div class="preview-bar-left">
           <span class="preview-kind-badge"><i data-lucide="image" aria-hidden="true"></i><span data-preview-kind>图像</span></span>
@@ -1048,6 +1050,7 @@ function bindEvents() {
   $('#video-refresh').addEventListener('click', refreshVideoStatus);
   $('#video-image-inputs').addEventListener('click', (event) => handleVideoRefAction('image', event));
   $('#video-keyframe-inputs').addEventListener('click', (event) => handleVideoRefAction('keyframes', event));
+  $('#video-keyframe-inputs').addEventListener('pointerdown', startKeyframeDrag);
   $('#video-image-file-input').addEventListener('change', (event) => handleVideoRefFiles('image', event));
   $('#video-keyframe-file-input').addEventListener('change', (event) => handleVideoRefFiles('keyframes', event));
   bindDragDrop($('#video-image-ref-grid'), (files) => addVideoRefFile('image', 0, files), { disabledZone: () => state.ui.video.mode !== 'image' });
@@ -1708,7 +1711,7 @@ async function handleImageFiles(event) {
 function renderImageReferences() {
   const maxRefs = imageModeMaxRefs();
   $('#image-reference-count').textContent = `${imageReferences.length} / ${maxRefs}`;
-  $('#image-reference-grid').innerHTML = imageReferences.map((reference) => `<div class="reference-tile"><img draggable="false" src="${escapeHtml(reference.dataUrl || reference.url)}" alt="${escapeHtml(reference.name)}"><button type="button" data-reference-action="remove" data-reference-id="${reference.id}" aria-label="移除参考图"><i data-lucide="x" aria-hidden="true"></i></button></div>`).join('');
+  $('#image-reference-grid').innerHTML = imageReferences.map((reference) => `<div class="reference-tile" data-reference-id="${reference.id}"><img draggable="false" src="${escapeHtml(reference.dataUrl || reference.url)}" alt="${escapeHtml(reference.name)}"><button type="button" data-reference-action="remove" data-reference-id="${reference.id}" aria-label="移除参考图"><i data-lucide="x" aria-hidden="true"></i></button></div>`).join('');
   const full = imageReferences.length >= maxRefs;
   const zone = $('#image-drop-zone');
   if (zone) {
@@ -1735,7 +1738,7 @@ function handleReferenceGridClick(event) {
   if (event.target.closest('[data-reference-action="remove"]')) return;
   const tile = event.target.closest('.reference-tile');
   if (!tile) return;
-  const id = tile.querySelector('[data-reference-id]')?.dataset.referenceId;
+  const id = tile.dataset.referenceId || tile.querySelector('[data-reference-id]')?.dataset.referenceId;
   const index = imageReferences.findIndex((reference) => reference.id === id);
   if (index < 0) return;
   openMediaPreview({
@@ -1749,7 +1752,7 @@ function startReferenceDrag(event) {
   const tile = event.target.closest('.reference-tile');
   if (!tile || event.target.closest('[data-reference-action="remove"]')) return;
   if (imageReferences.length < 2) return;
-  const id = tile.querySelector('[data-reference-id]')?.dataset.referenceId;
+  const id = tile.dataset.referenceId || tile.querySelector('[data-reference-id]')?.dataset.referenceId;
   if (!id || imageReferences.findIndex((reference) => reference.id === id) < 0) return;
   const pointerId = event.pointerId;
   const grid = $('#image-reference-grid');
@@ -1861,6 +1864,114 @@ function beginReferenceDrag(tile, grid, pointerId, startX, startY, endPointerSes
   applyTransform(startX, startY);
 }
 
+function markReferenceDragClick() {
+  refDragClickGuard = true;
+  window.setTimeout(() => { refDragClickGuard = false; }, 120);
+}
+
+function startLongPressDrag(event, { tile, onStart, onMove, onEnd }) {
+  if (event.button !== undefined && event.button !== 0) return;
+  if (!tile?.isConnected) return;
+  const pointerId = event.pointerId;
+  const startX = event.clientX;
+  const startY = event.clientY;
+  let active = false;
+  let ended = false;
+
+  const releaseCapture = () => {
+    if (tile.hasPointerCapture?.(pointerId)) {
+      try { tile.releasePointerCapture(pointerId); } catch (error) { /* 指针已释放 */ }
+    }
+  };
+  const removeListeners = () => {
+    document.removeEventListener('pointermove', handleMove);
+    document.removeEventListener('pointerup', finish);
+    document.removeEventListener('pointercancel', finish);
+    tile.removeEventListener('lostpointercapture', finish);
+  };
+  const finish = () => {
+    if (ended) return;
+    ended = true;
+    window.clearTimeout(timer);
+    removeListeners();
+    releaseCapture();
+    if (active) onEnd?.();
+  };
+  const handleMove = (moveEvent) => {
+    if (ended || moveEvent.pointerId !== pointerId) return;
+    if (!active) {
+      if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) > 8) finish();
+      return;
+    }
+    moveEvent.preventDefault();
+    onMove?.(moveEvent);
+  };
+  const timer = window.setTimeout(() => {
+    if (ended) return;
+    active = true;
+    onStart?.();
+  }, 350);
+
+  document.addEventListener('pointermove', handleMove);
+  document.addEventListener('pointerup', finish);
+  document.addEventListener('pointercancel', finish);
+  tile.addEventListener('lostpointercapture', finish);
+  try { tile.setPointerCapture(pointerId); } catch (error) { /* 当前浏览器不支持指针捕获 */ }
+}
+
+function startKeyframeDrag(event) {
+  if (event.target.closest('[data-video-ref-action]')) return;
+  if (videoKeyframeRefs.length < 2 || videoKeyframeRefs.some((ref) => !ref)) return;
+  const tile = event.target.closest('.video-ref-shot');
+  const pair = event.currentTarget.querySelector('.video-ref-pair');
+  if (!tile || !pair) return;
+  const slots = Array.from(pair.querySelectorAll('.video-ref-slot'));
+  const from = Number(tile.dataset.videoRefIndex);
+  if (!Number.isInteger(from) || !slots[from]) return;
+  const slotCenters = slots.map((slot) => {
+    const rect = slot.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  });
+  const startRect = tile.getBoundingClientRect();
+  const grabOffsetX = event.clientX - (startRect.left + startRect.width / 2);
+  const grabOffsetY = event.clientY - (startRect.top + startRect.height / 2);
+  let targetIndex = from;
+  let layoutCenter = slotCenters[from];
+  const applyTransform = (clientX, clientY) => {
+    tile.style.transform = `translate(${(clientX - grabOffsetX - layoutCenter.x).toFixed(1)}px, ${(clientY - grabOffsetY - layoutCenter.y).toFixed(1)}px) rotate(2deg) scale(1.06)`;
+  };
+
+  startLongPressDrag(event, {
+    tile,
+    onStart: () => {
+      document.body.classList.add('ref-dragging');
+      tile.classList.add('is-dragging');
+      applyTransform(event.clientX, event.clientY);
+    },
+    onMove: (moveEvent) => {
+      const nextIndex = slots.findIndex((slot) => {
+        const rect = slot.getBoundingClientRect();
+        return moveEvent.clientX >= rect.left && moveEvent.clientX <= rect.right && moveEvent.clientY >= rect.top && moveEvent.clientY <= rect.bottom;
+      });
+      if (nextIndex >= 0 && nextIndex !== targetIndex) {
+        targetIndex = nextIndex;
+        layoutCenter = slotCenters[targetIndex];
+      }
+      applyTransform(moveEvent.clientX, moveEvent.clientY);
+    },
+    onEnd: () => {
+      document.body.classList.remove('ref-dragging');
+      tile.classList.remove('is-dragging');
+      tile.style.transform = '';
+      if (targetIndex !== from) {
+        [videoKeyframeRefs[from], videoKeyframeRefs[targetIndex]] = [videoKeyframeRefs[targetIndex], videoKeyframeRefs[from]];
+      }
+      renderVideoRefs();
+      markReferenceDragClick();
+    }
+  });
+}
+
 function openImageUrlModal() {
   const existing = $('#image-url-modal');
   if (existing) existing.remove();
@@ -1925,9 +2036,9 @@ function videoRefEmptyMarkup(title) {
   </div>`;
 }
 
-function videoRefTileMarkup(ref) {
-  return `<div class="video-ref-shot">
-    <img src="${escapeHtml(ref.dataUrl || ref.url)}" alt="${escapeHtml(ref.name || '视频参考图')}">
+function videoRefTileMarkup(ref, index = 0) {
+  return `<div class="video-ref-shot" data-video-ref-index="${index}">
+    <img draggable="false" src="${escapeHtml(ref.dataUrl || ref.url)}" alt="${escapeHtml(ref.name || '视频参考图')}">
     <div class="video-ref-shot-bar"><span>${escapeHtml(ref.name || shortText(ref.url || '', 30))}</span><button class="icon-button small" type="button" data-video-ref-action="remove" aria-label="移除参考图"><i data-lucide="x" aria-hidden="true"></i></button></div>
   </div>`;
 }
@@ -1935,13 +2046,13 @@ function videoRefTileMarkup(ref) {
 function renderVideoRefs() {
   const imageGrid = $('#video-image-ref-grid');
   if (imageGrid) {
-    imageGrid.innerHTML = videoImageRefs.length ? videoRefTileMarkup(videoImageRefs[0]) : videoRefEmptyMarkup('添加首帧参考图');
+    imageGrid.innerHTML = videoImageRefs.length ? videoRefTileMarkup(videoImageRefs[0], 0) : videoRefEmptyMarkup('添加首帧参考图');
     $('#video-image-ref-count').textContent = `${videoImageRefs.length ? 1 : 0} / 1`;
   }
   [0, 1].forEach((index) => {
     const slot = $(`#video-keyframe-slot-${index}`);
     if (!slot) return;
-    slot.innerHTML = videoKeyframeRefs[index] ? videoRefTileMarkup(videoKeyframeRefs[index]) : videoRefEmptyMarkup('添加关键帧');
+    slot.innerHTML = videoKeyframeRefs[index] ? videoRefTileMarkup(videoKeyframeRefs[index], index) : videoRefEmptyMarkup('添加关键帧');
   });
   refreshIcons();
 }
@@ -1964,6 +2075,7 @@ function handleVideoRefFiles(kind, event) {
 }
 
 function handleVideoRefAction(kind, event) {
+  if (refDragClickGuard) { event.preventDefault(); return; }
   const button = event.target.closest('[data-video-ref-action]');
   if (!button) {
     const img = event.target.closest('.video-ref-shot img');
