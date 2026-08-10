@@ -474,6 +474,7 @@ function openWorkPicker({ onPick, multi = false, max = 1, selected = [] }) {
     refreshIcons();
     bindCardEvents();
     playAnimation();
+    updateActions();
   };
 
   const updateActions = () => {
@@ -611,8 +612,17 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
     const item = list[current];
     const src = item.url || item.src;
     mediaSlot.innerHTML = item.kind === 'video'
-      ? `<video controls autoplay preload="metadata" src="${escapeHtml(src)}"></video>`
+      ? `<video controls autoplay muted playsinline preload="metadata" src="${escapeHtml(src)}"></video>`
       : `<img src="${escapeHtml(src)}" alt="${escapeHtml(item.title || '')}">`;
+    const video = mediaSlot.querySelector('video');
+    if (video) {
+      try {
+        const playback = video.play();
+        if (playback?.catch) playback.catch(() => {});
+      } catch (error) {
+        // 浏览器阻止自动播放时保留控件，让用户手动开始。
+      }
+    }
     const badgeIcon = overlay.querySelector('.preview-kind-badge [data-lucide]');
     if (badgeIcon) badgeIcon.setAttribute('data-lucide', item.kind === 'video' ? 'clapperboard' : 'image');
     overlay.querySelector('.preview-kind-badge span[data-preview-kind]').textContent = item.kind === 'video' ? '视频' : '图像';
@@ -637,9 +647,9 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
     const item = list[current];
     const label = overlay.querySelector('[data-preview-choose-label]');
     const selected = isItemSelected ? Boolean(isItemSelected(item, current)) : false;
-    const disabled = Boolean(selected ? false : (disabledWhenChoosing && disabledWhenChoosing(item, current)));
-    button.disabled = disabled;
-    label.textContent = selected ? chooseSelectedLabel : (disabled ? (chooseDisabledLabel || chooseLabel) : chooseLabel);
+    const capped = Boolean(!selected && disabledWhenChoosing && disabledWhenChoosing(item, current));
+    button.setAttribute('aria-disabled', capped ? 'true' : 'false');
+    label.textContent = selected ? chooseSelectedLabel : (capped ? (chooseDisabledLabel || chooseLabel) : chooseLabel);
   };
 
   const go = (delta) => {
@@ -674,8 +684,16 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
     else if (action === 'next') go(1);
     else if (action === 'choose') {
       const item = list[current];
-      if (isItemSelected && isItemSelected(item, current)) onChoose(item, current);
-      else if (!(disabledWhenChoosing && disabledWhenChoosing(item, current))) onChoose(item, current);
+      if (isItemSelected && isItemSelected(item, current)) {
+        onChoose(item, current);
+        updateChoose();
+        return;
+      }
+      if (disabledWhenChoosing && disabledWhenChoosing(item, current)) {
+        showToast(chooseDisabledLabel || '已达选择上限。', 'error');
+        return;
+      }
+      onChoose(item, current);
       updateChoose();
     }
   });
@@ -972,11 +990,27 @@ function bindEvents() {
     const maxRefs = imageModeMaxRefs();
     const room = maxRefs - imageReferences.length;
     if (room <= 0) { showToast(`参考图已满 ${maxRefs} 张，先移除部分再选择。`, 'error'); return; }
+    const workUrls = new Set(state.works.filter((work) => work.kind === 'image').map((work) => safeMediaUrl(work.url)).filter(Boolean));
+    const selectedWorkUrls = imageReferences
+      .map((reference) => safeMediaUrl(reference.dataUrl || reference.url))
+      .filter((url) => workUrls.has(url));
     openWorkPicker({
       multi: true,
-      max: room,
+      max: room + selectedWorkUrls.length,
+      selected: selectedWorkUrls,
       onPick: (items) => {
-        items.forEach((item) => imageReferences.push({ id: createId('ref'), name: item.title, url: item.url }));
+        const selectedUrls = new Set(items.map((item) => safeMediaUrl(item.url)).filter(Boolean));
+        imageReferences = imageReferences.filter((reference) => {
+          const url = safeMediaUrl(reference.dataUrl || reference.url);
+          return !workUrls.has(url) || selectedUrls.has(url);
+        });
+        const existingUrls = new Set(imageReferences.map((reference) => safeMediaUrl(reference.dataUrl || reference.url)).filter(Boolean));
+        items.forEach((item) => {
+          const url = safeMediaUrl(item.url);
+          if (!url || existingUrls.has(url)) return;
+          imageReferences.push({ id: createId('ref'), name: item.title, url: item.url });
+          existingUrls.add(url);
+        });
         renderImageReferences();
       }
     });
@@ -1674,7 +1708,7 @@ async function handleImageFiles(event) {
 function renderImageReferences() {
   const maxRefs = imageModeMaxRefs();
   $('#image-reference-count').textContent = `${imageReferences.length} / ${maxRefs}`;
-  $('#image-reference-grid').innerHTML = imageReferences.map((reference) => `<div class="reference-tile"><img src="${escapeHtml(reference.dataUrl || reference.url)}" alt="${escapeHtml(reference.name)}"><button type="button" data-reference-action="remove" data-reference-id="${reference.id}" aria-label="移除参考图"><i data-lucide="x" aria-hidden="true"></i></button></div>`).join('');
+  $('#image-reference-grid').innerHTML = imageReferences.map((reference) => `<div class="reference-tile"><img draggable="false" src="${escapeHtml(reference.dataUrl || reference.url)}" alt="${escapeHtml(reference.name)}"><button type="button" data-reference-action="remove" data-reference-id="${reference.id}" aria-label="移除参考图"><i data-lucide="x" aria-hidden="true"></i></button></div>`).join('');
   const full = imageReferences.length >= maxRefs;
   const zone = $('#image-drop-zone');
   if (zone) {
@@ -1716,70 +1750,105 @@ function startReferenceDrag(event) {
   if (!tile || event.target.closest('[data-reference-action="remove"]')) return;
   if (imageReferences.length < 2) return;
   const id = tile.querySelector('[data-reference-id]')?.dataset.referenceId;
-  const index = imageReferences.findIndex((reference) => reference.id === id);
-  if (index < 0) return;
+  if (!id || imageReferences.findIndex((reference) => reference.id === id) < 0) return;
   const pointerId = event.pointerId;
   const grid = $('#image-reference-grid');
-  let cursorX = event.clientX;
-  let cursorY = event.clientY;
-  let longPress = false;
+  const startX = event.clientX;
+  const startY = event.clientY;
+  let dragging = false;
   let ended = false;
-  const timer = window.setTimeout(() => {
-    if (ended) return;
-    longPress = true;
-    beginReferenceDrag(tile, index, pointerId, grid, () => cursorX, () => cursorY);
-  }, 350);
-  const onMove = (moveEvent) => {
-    if (moveEvent.pointerId !== pointerId || ended) return;
-    cursorX = moveEvent.clientX;
-    cursorY = moveEvent.clientY;
-    if (!longPress && Math.hypot(cursorX - event.clientX, cursorY - event.clientY) > 8) cancel();
+
+  const releaseCapture = () => {
+    if (tile.hasPointerCapture?.(pointerId)) {
+      try { tile.releasePointerCapture(pointerId); } catch (error) { /* 指针已释放 */ }
+    }
   };
-  const onEnd = () => { if (!ended) { ended = true; cancel(); } };
-  const cancel = () => {
-    ended = true;
-    window.clearTimeout(timer);
+  const removeWaitingListeners = () => {
     document.removeEventListener('pointermove', onMove);
     document.removeEventListener('pointerup', onEnd);
     document.removeEventListener('pointercancel', onEnd);
+    tile.removeEventListener('lostpointercapture', onEnd);
   };
+  const endWaiting = () => {
+    if (ended) return;
+    ended = true;
+    window.clearTimeout(timer);
+    removeWaitingListeners();
+    releaseCapture();
+  };
+  const onMove = (moveEvent) => {
+    if (ended || moveEvent.pointerId !== pointerId || dragging) return;
+    if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) > 8) endWaiting();
+  };
+  const onEnd = () => { if (!dragging) endWaiting(); };
+  const timer = window.setTimeout(() => {
+    if (ended) return;
+    dragging = true;
+    removeWaitingListeners();
+    if (!tile.isConnected || !grid?.isConnected) { endWaiting(); return; }
+    beginReferenceDrag(tile, grid, pointerId, startX, startY, endWaiting);
+  }, 350);
+
   document.addEventListener('pointermove', onMove);
   document.addEventListener('pointerup', onEnd);
   document.addEventListener('pointercancel', onEnd);
+  tile.addEventListener('lostpointercapture', onEnd);
+  try { tile.setPointerCapture(pointerId); } catch (error) { /* 当前浏览器不支持指针捕获 */ }
 }
 
-function beginReferenceDrag(tile, fromIndex, pointerId, grid, getX, getY) {
+function beginReferenceDrag(tile, grid, pointerId, startX, startY, endPointerSession) {
+  if (!tile?.isConnected || !grid?.isConnected) { endPointerSession(); return; }
   const order = [...imageReferences];
+  const startRect = tile.getBoundingClientRect();
+  let layoutCenterX = startRect.left + startRect.width / 2;
+  let layoutCenterY = startRect.top + startRect.height / 2;
+  const grabOffsetX = startX - layoutCenterX;
+  const grabOffsetY = startY - layoutCenterY;
+  let finished = false;
   document.body.classList.add('ref-dragging');
   tile.classList.add('is-dragging');
-  const applyTransform = () => {
-    const rect = tile.getBoundingClientRect();
-    tile.style.transform = `translate(${(getX() - rect.left - rect.width / 2).toFixed(0)}px, ${(getY() - rect.top - rect.height / 2).toFixed(0)}px) rotate(2deg) scale(1.06)`;
+
+  const applyTransform = (clientX, clientY) => {
+    tile.style.transform = `translate(${(clientX - grabOffsetX - layoutCenterX).toFixed(1)}px, ${(clientY - grabOffsetY - layoutCenterY).toFixed(1)}px) rotate(2deg) scale(1.06)`;
   };
-  const onMove = (moveEvent) => {
-    if (moveEvent.pointerId !== pointerId) return;
-    const list = Array.from(grid.querySelectorAll('.reference-tile'));
-    const from = list.indexOf(tile);
-    const over = list.findIndex((item) => {
-      if (item === tile) return false;
-      const rect = item.getBoundingClientRect();
-      return moveEvent.clientX >= rect.left && moveEvent.clientX <= rect.right;
-    });
-    if (over >= 0 && over !== from) {
-      const [moved] = order.splice(from, 1);
-      order.splice(over, 0, moved);
-      if (over < from) grid.insertBefore(tile, list[over]);
-      else grid.insertBefore(tile, list[over].nextSibling);
-      applyTransform();
-    }
-  };
-  const onEnd = () => {
-    document.body.classList.remove('ref-dragging');
-    tile.classList.remove('is-dragging');
-    tile.style.transform = '';
+  const removeDragListeners = () => {
     document.removeEventListener('pointermove', onMove);
     document.removeEventListener('pointerup', onEnd);
     document.removeEventListener('pointercancel', onEnd);
+    tile.removeEventListener('lostpointercapture', onEnd);
+  };
+  const onMove = (moveEvent) => {
+    if (finished || moveEvent.pointerId !== pointerId) return;
+    const list = Array.from(grid.querySelectorAll('.reference-tile'));
+    const from = list.indexOf(tile);
+    let over = -1;
+    for (let i = 0; i < list.length; i += 1) {
+      if (list[i] === tile) continue;
+      const rect = list[i].getBoundingClientRect();
+      const inHorizontalBand = moveEvent.clientX >= rect.left && moveEvent.clientX <= rect.right;
+      const inVerticalBand = moveEvent.clientY >= rect.top - rect.height * 0.5 && moveEvent.clientY <= rect.bottom + rect.height * 0.5;
+      if (inHorizontalBand && inVerticalBand) { over = i; break; }
+    }
+    if (over >= 0 && over !== from) {
+      const target = list[over];
+      const targetRect = target.getBoundingClientRect();
+      const [moved] = order.splice(from, 1);
+      order.splice(over, 0, moved);
+      if (over < from) grid.insertBefore(tile, target);
+      else grid.insertBefore(tile, target.nextSibling);
+      layoutCenterX = targetRect.left + targetRect.width / 2;
+      layoutCenterY = targetRect.top + targetRect.height / 2;
+    }
+    applyTransform(moveEvent.clientX, moveEvent.clientY);
+  };
+  const onEnd = () => {
+    if (finished) return;
+    finished = true;
+    removeDragListeners();
+    document.body.classList.remove('ref-dragging');
+    tile.classList.remove('is-dragging');
+    tile.style.transform = '';
+    endPointerSession();
     imageReferences = order;
     renderImageReferences();
     refDragClickGuard = true;
@@ -1788,7 +1857,8 @@ function beginReferenceDrag(tile, fromIndex, pointerId, grid, getX, getY) {
   document.addEventListener('pointermove', onMove);
   document.addEventListener('pointerup', onEnd);
   document.addEventListener('pointercancel', onEnd);
-  applyTransform();
+  tile.addEventListener('lostpointercapture', onEnd);
+  applyTransform(startX, startY);
 }
 
 function openImageUrlModal() {

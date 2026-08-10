@@ -1907,12 +1907,14 @@ body .app-shell.video-fullscreen {
   border-radius: 8px;
   background: var(--inset);
   cursor: zoom-in;
+  touch-action: none;
 }
 
 .reference-tile img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  user-select: none;
 }
 
 .reference-tile button {
@@ -3984,7 +3986,8 @@ body.ref-dragging .reference-tile.is-dragging {
   opacity: 0.35;
 }
 
-.preview-bar .primary-action:disabled {
+.preview-bar .primary-action:disabled,
+.preview-bar .primary-action[aria-disabled="true"] {
   filter: none;
   opacity: 0.5;
   box-shadow: none;
