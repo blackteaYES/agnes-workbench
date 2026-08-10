@@ -588,7 +588,9 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
   overlay.id = 'media-preview';
   overlay.innerHTML = `
     <div class="preview-stage">
-      <button class="icon-button small preview-close" type="button" data-preview-action="close" aria-label="关闭预览" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
+      <div class="preview-head">
+        <button class="icon-button small preview-close" type="button" data-preview-action="close" aria-label="关闭预览" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
+      </div>
       <div class="preview-media-frame">
         <div class="preview-media-slot"></div>
         ${navVisible ? '<button class="preview-nav preview-nav-prev" type="button" data-preview-action="prev" aria-label="上一张" data-tooltip="上一张"><i data-lucide="chevron-left" aria-hidden="true"></i></button><button class="preview-nav preview-nav-next" type="button" data-preview-action="next" aria-label="下一张" data-tooltip="下一张"><i data-lucide="chevron-right" aria-hidden="true"></i></button>' : ''}
@@ -678,8 +680,9 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
   };
 
   overlay.addEventListener('click', (event) => {
-    if (event.target === overlay) { close(); return; }
+    const media = event.target.closest('.preview-media-slot img, .preview-media-slot video');
     const action = event.target.closest('[data-preview-action]')?.dataset.previewAction;
+    if (event.target === overlay || (!media && !action && !event.target.closest('.preview-bar'))) { close(); return; }
     if (!action) return;
     if (action === 'close') close();
     else if (action === 'prev') go(-1);
@@ -1747,135 +1750,29 @@ function handleReferenceGridClick(event) {
   });
 }
 
-function startReferenceDrag(event) {
-  if (event.button !== undefined && event.button !== 0) return;
-  const tile = event.target.closest('.reference-tile');
-  if (!tile || event.target.closest('[data-reference-action="remove"]')) return;
-  if (imageReferences.length < 2) return;
-  const id = tile.dataset.referenceId || tile.querySelector('[data-reference-id]')?.dataset.referenceId;
-  if (!id || imageReferences.findIndex((reference) => reference.id === id) < 0) return;
-  const pointerId = event.pointerId;
-  const grid = $('#image-reference-grid');
-  const startX = event.clientX;
-  const startY = event.clientY;
-  let dragging = false;
-  let ended = false;
-
-  const releaseCapture = () => {
-    if (tile.hasPointerCapture?.(pointerId)) {
-      try { tile.releasePointerCapture(pointerId); } catch (error) { /* 指针已释放 */ }
-    }
-  };
-  const removeWaitingListeners = () => {
-    document.removeEventListener('pointermove', onMove);
-    document.removeEventListener('pointerup', onEnd);
-    document.removeEventListener('pointercancel', onEnd);
-    tile.removeEventListener('lostpointercapture', onEnd);
-  };
-  const endWaiting = () => {
-    if (ended) return;
-    ended = true;
-    window.clearTimeout(timer);
-    removeWaitingListeners();
-    releaseCapture();
-  };
-  const onMove = (moveEvent) => {
-    if (ended || moveEvent.pointerId !== pointerId || dragging) return;
-    if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) > 8) endWaiting();
-  };
-  const onEnd = () => { if (!dragging) endWaiting(); };
-  const timer = window.setTimeout(() => {
-    if (ended) return;
-    dragging = true;
-    removeWaitingListeners();
-    if (!tile.isConnected || !grid?.isConnected) { endWaiting(); return; }
-    beginReferenceDrag(tile, grid, pointerId, startX, startY, endWaiting);
-  }, 350);
-
-  document.addEventListener('pointermove', onMove);
-  document.addEventListener('pointerup', onEnd);
-  document.addEventListener('pointercancel', onEnd);
-  tile.addEventListener('lostpointercapture', onEnd);
-  try { tile.setPointerCapture(pointerId); } catch (error) { /* 当前浏览器不支持指针捕获 */ }
+function animateReferenceFlip(elements, firstRects) {
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  elements.forEach((element) => {
+    const first = firstRects.get(element);
+    if (!first || typeof element.animate !== 'function') return;
+    const last = element.getBoundingClientRect();
+    const dx = first.left - last.left;
+    const dy = first.top - last.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    element.animate(
+      [{ transform: `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px)` }, { transform: 'translate(0, 0)' }],
+      { duration: 200, easing: 'cubic-bezier(0.22, 0.61, 0.36, 1)' }
+    );
+  });
 }
 
-function beginReferenceDrag(tile, grid, pointerId, startX, startY, endPointerSession) {
-  if (!tile?.isConnected || !grid?.isConnected) { endPointerSession(); return; }
-  const order = [...imageReferences];
-  const startRect = tile.getBoundingClientRect();
-  let layoutCenterX = startRect.left + startRect.width / 2;
-  let layoutCenterY = startRect.top + startRect.height / 2;
-  const grabOffsetX = startX - layoutCenterX;
-  const grabOffsetY = startY - layoutCenterY;
-  let finished = false;
-  document.body.classList.add('ref-dragging');
-  tile.classList.add('is-dragging');
-
-  const applyTransform = (clientX, clientY) => {
-    tile.style.transform = `translate(${(clientX - grabOffsetX - layoutCenterX).toFixed(1)}px, ${(clientY - grabOffsetY - layoutCenterY).toFixed(1)}px) rotate(2deg) scale(1.06)`;
-  };
-  const removeDragListeners = () => {
-    document.removeEventListener('pointermove', onMove);
-    document.removeEventListener('pointerup', onEnd);
-    document.removeEventListener('pointercancel', onEnd);
-    tile.removeEventListener('lostpointercapture', onEnd);
-  };
-  const onMove = (moveEvent) => {
-    if (finished || moveEvent.pointerId !== pointerId) return;
-    const list = Array.from(grid.querySelectorAll('.reference-tile'));
-    const from = list.indexOf(tile);
-    let over = -1;
-    for (let i = 0; i < list.length; i += 1) {
-      if (list[i] === tile) continue;
-      const rect = list[i].getBoundingClientRect();
-      const inHorizontalBand = moveEvent.clientX >= rect.left && moveEvent.clientX <= rect.right;
-      const inVerticalBand = moveEvent.clientY >= rect.top - rect.height * 0.5 && moveEvent.clientY <= rect.bottom + rect.height * 0.5;
-      if (inHorizontalBand && inVerticalBand) { over = i; break; }
-    }
-    if (over >= 0 && over !== from) {
-      const target = list[over];
-      const targetRect = target.getBoundingClientRect();
-      const [moved] = order.splice(from, 1);
-      order.splice(over, 0, moved);
-      if (over < from) grid.insertBefore(tile, target);
-      else grid.insertBefore(tile, target.nextSibling);
-      layoutCenterX = targetRect.left + targetRect.width / 2;
-      layoutCenterY = targetRect.top + targetRect.height / 2;
-    }
-    applyTransform(moveEvent.clientX, moveEvent.clientY);
-  };
-  const onEnd = () => {
-    if (finished) return;
-    finished = true;
-    removeDragListeners();
-    document.body.classList.remove('ref-dragging');
-    tile.classList.remove('is-dragging');
-    tile.style.transform = '';
-    endPointerSession();
-    imageReferences = order;
-    renderImageReferences();
-    refDragClickGuard = true;
-    window.setTimeout(() => { refDragClickGuard = false; }, 120);
-  };
-  document.addEventListener('pointermove', onMove);
-  document.addEventListener('pointerup', onEnd);
-  document.addEventListener('pointercancel', onEnd);
-  tile.addEventListener('lostpointercapture', onEnd);
-  applyTransform(startX, startY);
-}
-
-function markReferenceDragClick() {
-  refDragClickGuard = true;
-  window.setTimeout(() => { refDragClickGuard = false; }, 120);
-}
-
-function startLongPressDrag(event, { tile, onStart, onMove, onEnd }) {
+function startPointerReorderGesture(event, { tile, onStart, onMove, onDrop, onCancel }) {
   if (event.button !== undefined && event.button !== 0) return;
   if (!tile?.isConnected) return;
   const pointerId = event.pointerId;
   const startX = event.clientX;
   const startY = event.clientY;
-  let active = false;
+  let phase = 'pressed';
   let ended = false;
 
   const releaseCapture = () => {
@@ -1885,38 +1782,181 @@ function startLongPressDrag(event, { tile, onStart, onMove, onEnd }) {
   };
   const removeListeners = () => {
     document.removeEventListener('pointermove', handleMove);
-    document.removeEventListener('pointerup', finish);
-    document.removeEventListener('pointercancel', finish);
-    tile.removeEventListener('lostpointercapture', finish);
+    document.removeEventListener('pointerup', handleDrop);
+    document.removeEventListener('pointercancel', handleCancel);
+    tile.removeEventListener('lostpointercapture', handleCancel);
+    window.removeEventListener('blur', handleCancel);
+    document.removeEventListener('visibilitychange', handleVisibility);
   };
-  const finish = () => {
+  const finish = (kind, endEvent) => {
     if (ended) return;
     ended = true;
-    window.clearTimeout(timer);
     removeListeners();
     releaseCapture();
-    if (active) onEnd?.();
+    if (phase !== 'dragging') return;
+    if (kind === 'drop') onDrop?.(endEvent);
+    else onCancel?.();
   };
   const handleMove = (moveEvent) => {
     if (ended || moveEvent.pointerId !== pointerId) return;
-    if (!active) {
-      if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) > 8) finish();
-      return;
+    if (phase === 'pressed') {
+      if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) <= 8) return;
+      phase = 'dragging';
+      onStart?.(startX, startY);
     }
     moveEvent.preventDefault();
     onMove?.(moveEvent);
   };
-  const timer = window.setTimeout(() => {
-    if (ended) return;
-    active = true;
-    onStart?.();
-  }, 350);
+  const handleDrop = (dropEvent) => finish('drop', dropEvent);
+  const handleCancel = () => finish('cancel');
+  const handleVisibility = () => { if (document.hidden) handleCancel(); };
 
   document.addEventListener('pointermove', handleMove);
-  document.addEventListener('pointerup', finish);
-  document.addEventListener('pointercancel', finish);
-  tile.addEventListener('lostpointercapture', finish);
+  document.addEventListener('pointerup', handleDrop);
+  document.addEventListener('pointercancel', handleCancel);
+  tile.addEventListener('lostpointercapture', handleCancel);
+  window.addEventListener('blur', handleCancel);
+  document.addEventListener('visibilitychange', handleVisibility);
   try { tile.setPointerCapture(pointerId); } catch (error) { /* 当前浏览器不支持指针捕获 */ }
+}
+
+function findReferenceDropTarget(container, selector, tile, clientX, clientY) {
+  return Array.from(container.querySelectorAll(selector)).find((candidate) => {
+    if (candidate === tile) return false;
+    const rect = candidate.getBoundingClientRect();
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  }) || null;
+}
+
+function startReferenceDrag(event) {
+  const tile = event.target.closest('.reference-tile');
+  if (!tile || event.target.closest('[data-reference-action="remove"]')) return;
+  if (imageReferences.length < 2) return;
+  const grid = $('#image-reference-grid');
+  if (!grid) return;
+  const originOrder = [...imageReferences];
+  const draftOrder = [...originOrder];
+  let grabOffsetX = 0;
+  let grabOffsetY = 0;
+  let currentTarget = null;
+  let placeholder = null;
+
+  const clearVisualState = () => {
+    if (currentTarget) currentTarget.classList.remove('is-drop-target');
+    document.body.classList.remove('ref-dragging');
+    tile.classList.remove('is-dragging');
+    tile.style.transform = '';
+  };
+  const resetSource = () => {
+    tile.style.position = '';
+    tile.style.left = '';
+    tile.style.top = '';
+    tile.style.width = '';
+    tile.style.height = '';
+    tile.style.zIndex = '';
+    tile.style.margin = '';
+    tile.style.transform = '';
+  };
+  const visualNodes = () => Array.from(grid.children).filter((node) => node === placeholder || (node.matches?.('.reference-tile') && node !== tile));
+  const isInside = (element, clientX, clientY) => {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  };
+  const restoreOrigin = () => {
+    const elements = Array.from(grid.querySelectorAll('.reference-tile'));
+    const firstRects = new Map(elements.filter((element) => element !== tile).map((element) => [element, { left: element.getBoundingClientRect().left, top: element.getBoundingClientRect().top }]));
+    const byId = new Map(elements.map((element) => [element.dataset.referenceId, element]));
+    originOrder.forEach((reference) => {
+      const element = byId.get(reference.id);
+      if (element) grid.appendChild(element);
+    });
+    placeholder?.remove();
+    placeholder = null;
+    resetSource();
+    animateReferenceFlip(elements.filter((element) => element !== tile), firstRects);
+  };
+  const applyTransform = (clientX, clientY) => {
+    tile.style.left = `${clientX - grabOffsetX}px`;
+    tile.style.top = `${clientY - grabOffsetY}px`;
+    tile.style.transform = 'rotate(2deg) scale(1.06)';
+  };
+
+  startPointerReorderGesture(event, {
+    tile,
+    onStart: (startX, startY) => {
+      const rect = tile.getBoundingClientRect();
+      grabOffsetX = startX - rect.left;
+      grabOffsetY = startY - rect.top;
+      placeholder = document.createElement('div');
+      placeholder.className = 'reference-drag-placeholder';
+      placeholder.style.width = `${rect.width}px`;
+      placeholder.style.height = `${rect.height}px`;
+      grid.insertBefore(placeholder, tile);
+      tile.style.position = 'fixed';
+      tile.style.left = `${rect.left}px`;
+      tile.style.top = `${rect.top}px`;
+      tile.style.width = `${rect.width}px`;
+      tile.style.height = `${rect.height}px`;
+      tile.style.zIndex = '20';
+      tile.style.margin = '0';
+      document.body.classList.add('ref-dragging');
+      tile.classList.add('is-dragging');
+      applyTransform(startX, startY);
+    },
+    onMove: (moveEvent) => {
+      const target = findReferenceDropTarget(grid, '.reference-tile', tile, moveEvent.clientX, moveEvent.clientY);
+      const dropTarget = target || (isInside(placeholder, moveEvent.clientX, moveEvent.clientY) ? placeholder : null);
+      const targetChanged = dropTarget !== currentTarget;
+      if (targetChanged) {
+        if (currentTarget) currentTarget.classList.remove('is-drop-target');
+        currentTarget = dropTarget;
+        if (currentTarget) currentTarget.classList.add('is-drop-target');
+      }
+      if (targetChanged && target) {
+        const list = visualNodes();
+        const from = list.indexOf(placeholder);
+        const over = list.indexOf(target);
+        if (over !== from) {
+          const animated = list.filter((element) => element !== placeholder);
+          const firstRects = new Map(animated.map((element) => [element, { left: element.getBoundingClientRect().left, top: element.getBoundingClientRect().top }]));
+          const [moved] = draftOrder.splice(from, 1);
+          draftOrder.splice(over, 0, moved);
+          if (over < from) grid.insertBefore(placeholder, target);
+          else grid.insertBefore(placeholder, target.nextSibling);
+          animateReferenceFlip(animated, firstRects);
+        }
+      }
+      applyTransform(moveEvent.clientX, moveEvent.clientY);
+    },
+    onDrop: (dropEvent) => {
+      const target = findReferenceDropTarget(grid, '.reference-tile', tile, dropEvent.clientX, dropEvent.clientY);
+      const hasDraftChange = draftOrder.some((reference, index) => reference.id !== originOrder[index]?.id);
+      const valid = Boolean((target && target !== tile) || (hasDraftChange && isInside(placeholder, dropEvent.clientX, dropEvent.clientY)));
+      clearVisualState();
+      if (valid) {
+        grid.insertBefore(tile, placeholder);
+        placeholder?.remove();
+        placeholder = null;
+        resetSource();
+        imageReferences = draftOrder;
+        renderImageReferences();
+      } else {
+        restoreOrigin();
+      }
+      markReferenceDragClick();
+    },
+    onCancel: () => {
+      clearVisualState();
+      restoreOrigin();
+      markReferenceDragClick();
+    }
+  });
+}
+
+function markReferenceDragClick() {
+  refDragClickGuard = true;
+  window.setTimeout(() => { refDragClickGuard = false; }, 120);
 }
 
 function startKeyframeDrag(event) {
@@ -1928,6 +1968,7 @@ function startKeyframeDrag(event) {
   const slots = Array.from(pair.querySelectorAll('.video-ref-slot'));
   const from = Number(tile.dataset.videoRefIndex);
   if (!Number.isInteger(from) || !slots[from]) return;
+  const originOrder = [...videoKeyframeRefs];
   const slotCenters = slots.map((slot) => {
     const rect = slot.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -1935,38 +1976,61 @@ function startKeyframeDrag(event) {
   const startRect = tile.getBoundingClientRect();
   const grabOffsetX = event.clientX - (startRect.left + startRect.width / 2);
   const grabOffsetY = event.clientY - (startRect.top + startRect.height / 2);
-  let targetIndex = from;
+  let targetIndex = -1;
   let layoutCenter = slotCenters[from];
+  let currentTarget = null;
   const applyTransform = (clientX, clientY) => {
     tile.style.transform = `translate(${(clientX - grabOffsetX - layoutCenter.x).toFixed(1)}px, ${(clientY - grabOffsetY - layoutCenter.y).toFixed(1)}px) rotate(2deg) scale(1.06)`;
   };
+  const clearVisualState = () => {
+    if (currentTarget) currentTarget.classList.remove('is-drop-target');
+    document.body.classList.remove('ref-dragging');
+    tile.classList.remove('is-dragging');
+    tile.style.transform = '';
+  };
+  const findTarget = (clientX, clientY) => slots.find((slot, index) => {
+    if (index === from) return false;
+    const rect = slot.getBoundingClientRect();
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  }) || null;
 
-  startLongPressDrag(event, {
+  startPointerReorderGesture(event, {
     tile,
-    onStart: () => {
+    onStart: (startX, startY) => {
       document.body.classList.add('ref-dragging');
       tile.classList.add('is-dragging');
-      applyTransform(event.clientX, event.clientY);
+      applyTransform(startX, startY);
     },
     onMove: (moveEvent) => {
-      const nextIndex = slots.findIndex((slot) => {
-        const rect = slot.getBoundingClientRect();
-        return moveEvent.clientX >= rect.left && moveEvent.clientX <= rect.right && moveEvent.clientY >= rect.top && moveEvent.clientY <= rect.bottom;
-      });
-      if (nextIndex >= 0 && nextIndex !== targetIndex) {
+      const target = findTarget(moveEvent.clientX, moveEvent.clientY);
+      const nextIndex = target ? slots.indexOf(target) : -1;
+      if (target !== currentTarget) {
+        if (currentTarget) currentTarget.classList.remove('is-drop-target');
+        currentTarget = target;
+        if (currentTarget) currentTarget.classList.add('is-drop-target');
+      }
+      if (nextIndex >= 0) {
         targetIndex = nextIndex;
         layoutCenter = slotCenters[targetIndex];
       }
       applyTransform(moveEvent.clientX, moveEvent.clientY);
     },
-    onEnd: () => {
-      document.body.classList.remove('ref-dragging');
-      tile.classList.remove('is-dragging');
-      tile.style.transform = '';
-      if (targetIndex !== from) {
-        [videoKeyframeRefs[from], videoKeyframeRefs[targetIndex]] = [videoKeyframeRefs[targetIndex], videoKeyframeRefs[from]];
+    onDrop: (dropEvent) => {
+      const target = findTarget(dropEvent.clientX, dropEvent.clientY);
+      const dropIndex = target ? slots.indexOf(target) : -1;
+      const valid = dropIndex >= 0;
+      clearVisualState();
+      if (valid) {
+        [videoKeyframeRefs[from], videoKeyframeRefs[dropIndex]] = [videoKeyframeRefs[dropIndex], videoKeyframeRefs[from]];
+        renderVideoRefs();
+      } else {
+        videoKeyframeRefs = originOrder;
       }
-      renderVideoRefs();
+      markReferenceDragClick();
+    },
+    onCancel: () => {
+      videoKeyframeRefs = originOrder;
+      clearVisualState();
       markReferenceDragClick();
     }
   });
