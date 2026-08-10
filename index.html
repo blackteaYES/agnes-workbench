@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#111414">
+    <meta name="description" content="Agnes 创作工作台">
+    <title>Agnes 创作工作台 v2.16.0</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css?v=2.16.0">
+    <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+    <script defer src="app.js?v=2.16.0"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="主导航">
+        <div class="brand-lockup">
+          <div class="brand-main">
+            <div class="brand-mark" aria-hidden="true">AG</div>
+            <div class="brand-copy">
+              <div class="brand-name">AGNES</div>
+              <div class="brand-subtitle">创作工作台</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="workspace-switcher">
+          <span class="status-light is-live" aria-hidden="true"></span>
+          <span>本地工作区</span>
+          <i data-lucide="chevron-down" aria-hidden="true"></i>
+          <button class="icon-button small sidebar-collapse-toggle" type="button" id="sidebar-collapse-toggle" aria-label="收起导航栏" data-tooltip="收起导航栏"><i data-lucide="panel-left-close" aria-hidden="true"></i></button>
+        </div>
+
+        <nav class="primary-nav" aria-label="创作模式">
+          <div class="nav-label">工作区</div>
+          <button class="nav-item is-active" type="button" data-mode="chat" aria-label="文本对话" data-tooltip="文本对话">
+            <i data-lucide="message-square-text" aria-hidden="true"></i>
+            <span>文本对话</span>
+          </button>
+          <button class="nav-item" type="button" data-mode="image" aria-label="图像生成" data-tooltip="图像生成">
+            <i data-lucide="image" aria-hidden="true"></i>
+            <span>图像生成</span>
+          </button>
+          <button class="nav-item" type="button" data-mode="video" aria-label="视频生成" data-tooltip="视频生成">
+            <i data-lucide="clapperboard" aria-hidden="true"></i>
+            <span>视频生成</span>
+          </button>
+          <button class="nav-item" type="button" data-mode="works" aria-label="作品历史" data-tooltip="作品历史">
+            <i data-lucide="archive" aria-hidden="true"></i>
+            <span>作品历史</span>
+            <span class="nav-count" id="works-count">0</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-spacer"></div>
+
+        <button class="key-nav-button" type="button" id="sidebar-key-settings">
+          <span class="key-nav-icon"><i data-lucide="key-round" aria-hidden="true"></i></span>
+          <span class="key-nav-copy">
+            <strong>API 密钥</strong>
+            <small id="sidebar-key-state">未配置</small>
+          </span>
+          <i data-lucide="arrow-up-right" aria-hidden="true"></i>
+        </button>
+
+        <div class="sidebar-foot">
+          <span>Agnes API / v1</span>
+          <span class="mono">本地-01</span>
+        </div>
+      </aside>
+
+      <main class="workbench">
+        <header class="topbar">
+          <div class="topbar-context">
+            <span class="eyebrow">AGNES / 创作工作台</span>
+            <span class="breadcrumb-separator">/</span>
+            <span class="breadcrumb-current" id="mode-breadcrumb">文本对话</span>
+          </div>
+          <div class="topbar-actions">
+            <div class="api-status" id="api-status" aria-live="polite">
+              <span class="status-light" id="api-status-dot" aria-hidden="true"></span>
+              <span id="api-status-text">未配置密钥</span>
+            </div>
+            <button class="icon-button" type="button" id="open-key-settings" aria-label="设置 API 密钥" data-tooltip="设置 API 密钥">
+              <i data-lucide="key-round" aria-hidden="true"></i>
+            </button>
+            <button class="icon-button mobile-only" type="button" id="mobile-inspector-toggle" aria-label="打开设置面板" data-tooltip="设置面板">
+              <i data-lucide="sliders-horizontal" aria-hidden="true"></i>
+            </button>
+          </div>
+        </header>
+
+        <button class="icon-button desktop-only is-hidden" type="button" id="inspector-open-toggle" aria-label="展开设置面板" data-tooltip="展开设置面板">
+          <i data-lucide="panel-right-open" aria-hidden="true"></i>
+        </button>
+
+        <div class="content-grid">
+          <section class="studio-column">
+            <section class="mode-panel" id="mode-chat" data-mode-panel="chat">
+              <div class="mode-heading">
+                <div>
+                  <div class="section-kicker"><span class="signal-line"></span> 文本创作</div>
+                  <h1>把想法变成下一步。</h1>
+                </div>
+              </div>
+
+              <div class="chat-surface surface-frame">
+                <div class="surface-toolbar">
+                  <div class="surface-toolbar-title">
+                    <span class="live-pulse"></span>
+                    <span id="chat-session-title">新会话</span>
+                  </div>
+                  <div class="toolbar-actions">
+                    <button class="text-button" type="button" id="new-chat">
+                      <i data-lucide="plus" aria-hidden="true"></i>
+                      新会话
+                    </button>
+                    <button class="icon-button small" type="button" id="chat-fullscreen-toggle" aria-label="进入全屏" data-tooltip="进入全屏">
+                      <i data-lucide="maximize-2" aria-hidden="true"></i>
+                    </button>
+                    <button class="icon-button small" type="button" id="clear-chat" aria-label="清空当前会话" data-tooltip="清空当前会话">
+                      <i data-lucide="eraser" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
+
+                <div class="prompt-suggestions" id="chat-suggestions">
+                  <button class="suggestion-chip" type="button" data-prompt="帮我把一个模糊的产品想法整理成清晰的创作 brief。">整理创作 brief <i data-lucide="arrow-up-right" aria-hidden="true"></i></button>
+                  <button class="suggestion-chip" type="button" data-prompt="为一支 5 秒的产品短片写出画面、镜头和运动提示词。">拆解镜头语言 <i data-lucide="arrow-up-right" aria-hidden="true"></i></button>
+                  <button class="suggestion-chip" type="button" data-prompt="把下面的想法改写成适合 Agnes 图像模型的高信息密度提示词：">优化图像提示词 <i data-lucide="arrow-up-right" aria-hidden="true"></i></button>
+                </div>
+
+                <form class="composer" id="chat-form">
+                  <div class="vision-input-panel" id="chat-vision-panel" hidden>
+                    <div class="inline-label"><i data-lucide="scan-eye" aria-hidden="true"></i> 图像理解</div>
+                    <div class="chat-image-source-switch" role="tablist" aria-label="图像来源">
+                      <button class="segment-button is-active" type="button" role="tab" data-chat-image-source="upload">上传图片</button>
+                      <button class="segment-button" type="button" role="tab" data-chat-image-source="url">图片 URL</button>
+                    </div>
+                    <div id="chat-image-upload-source">
+                      <label class="chat-upload-zone" for="chat-image-file-input">
+                        <i data-lucide="upload" aria-hidden="true"></i>
+                        <span>选择本地图片</span>
+                        <small>图片会转换为 Data URI，仅发送到 Agnes</small>
+                        <input id="chat-image-file-input" type="file" accept="image/*">
+                      </label>
+                      <div id="chat-image-preview" hidden></div>
+                    </div>
+                    <div id="chat-image-url-source" hidden>
+                      <div class="inline-input-row">
+                        <input id="chat-image-url" type="url" placeholder="https://example.com/image.jpg" autocomplete="off">
+                        <button class="icon-button small" type="button" id="chat-clear-image" aria-label="清除图像 URL" data-tooltip="清除图像 URL">
+                          <i data-lucide="x" aria-hidden="true"></i>
+                        </button>
+                      </div>
+                      <small class="vision-helper">需要公开可访问的 HTTPS 图片地址</small>
+                    </div>
+                  </div>
+                  <textarea id="chat-input" rows="3" placeholder="写下你的想法，回车发送；Shift + 回车换行"></textarea>
+                  <div class="composer-footer">
+                    <div class="composer-tools">
+                      <button class="tool-button" type="button" id="chat-vision-toggle">
+                        <i data-lucide="image-plus" aria-hidden="true"></i>
+                        添加图像
+                      </button>
+                      <span class="composer-hint mono">流式输出已开启</span>
+                      <button class="composer-hint mono thinking-hint" id="chat-thinking-hint" type="button" role="switch" aria-checked="false" title="点击切换思考模式"><i data-lucide="brain" aria-hidden="true"></i><span id="chat-thinking-hint-text">思考模式：关</span></button>
+                    </div>
+                    <button class="send-button" type="submit" id="chat-send" aria-label="发送消息">
+                      <span>发送</span>
+                      <i data-lucide="arrow-up" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </section>
+
+            <section class="mode-panel is-hidden" id="mode-image" data-mode-panel="image">
+              <div class="mode-heading">
+                <div>
+                  <div class="section-kicker"><span class="signal-line"></span> 图像创作</div>
+                  <h1>给画面一个方向。</h1>
+                </div>
+              </div>
+
+              <div class="studio-split image-studio">
+                <section class="control-surface surface-frame">
+                  <div class="surface-toolbar">
+                    <div class="surface-toolbar-title">生成设置</div>
+                    <span class="surface-index mono">01 / 提示词</span>
+                  </div>
+                  <div class="image-mode-switch" role="tablist" aria-label="图像生成模式">
+                    <button class="segment-button is-active" type="button" role="tab" data-image-mode="text">文生图</button>
+                    <button class="segment-button" type="button" role="tab" data-image-mode="image">图生图</button>
+                    <button class="segment-button" type="button" role="tab" data-image-mode="composite">多图合成</button>
+                  </div>
+                  <div class="field-block">
+                    <label class="field-label" for="image-prompt"><span>提示词</span><span class="field-required">必填</span></label>
+                    <textarea id="image-prompt" class="large-textarea" rows="7" placeholder="主体、环境、风格、光照、构图、质量要求"></textarea>
+                  </div>
+                  <div class="prompt-structure is-hidden" id="image-prompt-structure"></div>
+                  <section class="prompt-workbench" aria-label="提示词工作台">
+                    <div class="prompt-workbench-head">
+                      <div>
+                        <span class="prompt-workbench-title">提示词工作台</span>
+                        <small>先选风格，再让 AI 补全或优化</small>
+                      </div>
+                      <span class="mono">AI 助手</span>
+                    </div>
+                    <div class="prompt-tool-label"><span>风格预设</span><span id="image-style-summary">自由发挥</span></div>
+                    <div class="style-preset-list" role="listbox" aria-label="风格预设">
+                      <button class="style-preset is-active" type="button" data-image-style="none">自由发挥</button>
+                      <button class="style-preset" type="button" data-image-style="cinematic">电影叙事</button>
+                      <button class="style-preset" type="button" data-image-style="product">商业产品</button>
+                      <button class="style-preset" type="button" data-image-style="documentary">自然纪实</button>
+                      <button class="style-preset" type="button" data-image-style="oriental">东方意境</button>
+                      <button class="style-preset" type="button" data-image-style="neon">赛博霓虹</button>
+                      <button class="style-preset" type="button" data-image-style="film">柔和胶片</button>
+                      <button class="style-preset" type="button" data-image-style="illustration">艺术插画</button>
+                    </div>
+                    <label class="prompt-tool-label" for="image-keywords"><span>优化方向</span><span>可选</span></label>
+                    <input id="image-keywords" type="text" placeholder="例如：突出材质、正面构图、适合电商主图" autocomplete="off">
+                    <div class="prompt-tool-actions">
+                      <button class="prompt-tool-button" type="button" id="image-random-prompt"><i data-lucide="dice-5" aria-hidden="true"></i><span>随机灵感</span></button>
+                      <button class="prompt-tool-button is-primary" type="button" id="image-optimize-prompt"><i data-lucide="wand-sparkles" aria-hidden="true"></i><span>优化提示词</span></button>
+                    </div>
+                    <div class="prompt-workbench-note" id="image-prompt-note"><i data-lucide="info" aria-hidden="true"></i><span>当前风格会在生成时自动加入提示词。</span></div>
+                  </section>
+                  <div class="reference-zone is-hidden" id="image-reference-zone">
+                    <div class="reference-zone-heading">
+                      <span>参考图像</span>
+                      <span class="reference-heading-actions"><span class="mono" id="image-reference-count">0 / 4</span><button class="text-button" type="button" id="image-pick-work"><i data-lucide="folder-open" aria-hidden="true"></i>从作品选择</button><button class="text-button" type="button" id="image-pick-link"><i data-lucide="link" aria-hidden="true"></i>链接</button></span>
+                    </div>
+                    <label class="drop-zone" for="image-file-input" id="image-drop-zone">
+                      <i data-lucide="upload-cloud" aria-hidden="true"></i>
+                      <span id="image-drop-zone-text">拖入图片或点击选择</span>
+                      <small>本地文件会转换为 Data URI</small>
+                      <input id="image-file-input" type="file" accept="image/*" multiple>
+                    </label>
+                    <div class="reference-grid" id="image-reference-grid"></div>
+                  </div>
+                  <div class="control-footer">
+                    <span class="control-note"><i data-lucide="circle-check" aria-hidden="true"></i> URL 输出</span>
+                    <button class="primary-action" type="button" id="image-generate">
+                      生成图像
+                      <i data-lucide="sparkles" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </section>
+
+                <section class="output-surface surface-frame" id="image-output-surface">
+                  <div class="surface-toolbar">
+                    <div class="surface-toolbar-title">输出画布</div>
+                    <div class="output-actions" id="image-output-actions" hidden>
+                      <button class="icon-button small" type="button" id="image-copy-url" aria-label="复制图像 URL" data-tooltip="复制图像 URL"><i data-lucide="link" aria-hidden="true"></i></button>
+                      <button class="icon-button small" type="button" id="image-open" aria-label="打开原图" data-tooltip="打开原图"><i data-lucide="external-link" aria-hidden="true"></i></button>
+                      <button class="icon-button small" type="button" id="image-download" aria-label="下载图像" data-tooltip="下载图像"><i data-lucide="download" aria-hidden="true"></i></button>
+                    </div>
+                    <button class="icon-button small" type="button" id="image-fullscreen-toggle" aria-label="进入全屏" data-tooltip="进入全屏"><i data-lucide="maximize-2" aria-hidden="true"></i></button>
+                  </div>
+                  <div class="media-output" id="image-result"></div>
+                </section>
+              </div>
+            </section>
+
+            <section class="mode-panel is-hidden" id="mode-video" data-mode-panel="video">
+              <div class="mode-heading">
+                <div>
+                  <div class="section-kicker"><span class="signal-line is-cyan"></span> 视频创作</div>
+                  <h1>让静帧开始运动。</h1>
+                </div>
+              </div>
+
+              <div class="studio-split video-studio">
+                <section class="control-surface surface-frame">
+                  <div class="surface-toolbar">
+                    <div class="surface-toolbar-title">生成任务</div>
+                    <span class="surface-index mono">异步任务</span>
+                  </div>
+                  <div class="video-mode-switch" role="tablist" aria-label="视频生成模式">
+                    <button class="segment-button is-active" type="button" role="tab" data-video-mode="text">文生视频</button>
+                    <button class="segment-button" type="button" role="tab" data-video-mode="image">图生视频</button>
+                    <button class="segment-button" type="button" role="tab" data-video-mode="keyframes">关键帧动画</button>
+                  </div>
+                  <div class="field-block">
+                    <label class="field-label" for="video-prompt"><span>提示词</span><span class="field-required">必填</span></label>
+                    <textarea id="video-prompt" class="large-textarea" rows="6" placeholder="主体 + 动作 + 场景 + 镜头运动 + 光线 + 风格"></textarea>
+                  </div>
+                  <div class="video-inputs is-hidden" id="video-image-inputs">
+                    <div class="video-ref-head"><span>首帧参考图</span><span class="mono" id="video-image-ref-count">0 / 1</span></div>
+                    <div class="video-ref-grid" id="video-image-ref-grid"></div>
+                    <input id="video-image-file-input" type="file" accept="image/*" hidden>
+                  </div>
+                  <div class="video-inputs is-hidden" id="video-keyframe-inputs">
+                    <div class="video-ref-head"><span>关键帧</span><span class="mono">2 张</span></div>
+                    <div class="video-ref-pair">
+                      <div class="video-ref-card"><span class="video-ref-badge">01</span><div class="video-ref-slot" id="video-keyframe-slot-0"></div></div>
+                      <div class="video-ref-card"><span class="video-ref-badge">02</span><div class="video-ref-slot" id="video-keyframe-slot-1"></div></div>
+                    </div>
+                    <input id="video-keyframe-file-input" type="file" accept="image/*" hidden>
+                  </div>
+                  <div class="control-footer video-footer">
+                    <span class="control-note" id="video-estimate"><i data-lucide="clock-3" aria-hidden="true"></i> 约 5 秒 / 121 帧</span>
+                    <button class="primary-action is-cyan-action" type="button" id="video-generate">
+                      创建任务
+                      <i data-lucide="play" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </section>
+
+                <section class="output-surface surface-frame" id="video-output-surface">
+                  <div class="surface-toolbar">
+                    <div class="surface-toolbar-title">任务监视器</div>
+                    <div class="video-monitor-actions">
+                      <button class="text-button video-refresh-button" type="button" id="video-refresh" hidden><i data-lucide="refresh-cw" aria-hidden="true"></i>刷新状态</button>
+                      <button class="stop-button" type="button" id="video-stop" hidden><i data-lucide="square" aria-hidden="true"></i>停止跟踪</button>
+                    </div>
+                    <button class="icon-button small" type="button" id="video-fullscreen-toggle" aria-label="进入全屏" data-tooltip="进入全屏"><i data-lucide="maximize-2" aria-hidden="true"></i></button>
+                  </div>
+                  <div class="video-job-output" id="video-result"></div>
+                </section>
+              </div>
+            </section>
+
+            <section class="mode-panel is-hidden" id="mode-works" data-mode-panel="works">
+              <div class="mode-heading works-heading">
+                <div>
+                  <div class="section-kicker"><span class="signal-line is-lime"></span> 作品记录</div>
+                  <h1>留住已经发生的画面。</h1>
+                </div>
+                <button class="text-button danger-button" type="button" id="clear-works"><i data-lucide="trash-2" aria-hidden="true"></i>清除作品</button>
+              </div>
+              <div class="works-toolbar">
+                <div class="filter-tabs" role="tablist" aria-label="作品筛选">
+                  <button class="filter-tab is-active" type="button" data-work-filter="all">全部 <span id="all-work-count">0</span></button>
+                  <button class="filter-tab" type="button" data-work-filter="image">图像 <span id="image-work-count">0</span></button>
+                  <button class="filter-tab" type="button" data-work-filter="video">视频 <span id="video-work-count">0</span></button>
+                </div>
+                <span class="mono works-storage-label">浏览器存储 / 仅保存 URL</span>
+              </div>
+              <div class="works-grid" id="works-grid"></div>
+            </section>
+          </section>
+
+          <aside class="inspector" id="inspector-panel" aria-label="创作设置">
+            <div class="inspector-head">
+              <div>
+                <div class="section-kicker">创作设置</div>
+                <h2>设置面板</h2>
+              </div>
+              <button class="icon-button small desktop-only" type="button" id="inspector-collapse-toggle" aria-label="收起设置面板" data-tooltip="收起设置面板"><i data-lucide="panel-right-close" aria-hidden="true"></i></button>
+              <button class="icon-button small mobile-only" type="button" id="mobile-inspector-close" aria-label="关闭设置面板" data-tooltip="关闭设置面板"><i data-lucide="x" aria-hidden="true"></i></button>
+            </div>
+
+            <div class="inspector-content" id="inspector-chat">
+              <div class="inspector-section">
+                <div class="inspector-section-title"><span>模型</span><span class="mono">文本</span></div>
+                <div class="model-readout"><span class="model-orb orange-orb"></span><span>agnes-2.5-flash</span><i data-lucide="lock-keyhole" aria-hidden="true"></i></div>
+              </div>
+              <div class="inspector-section">
+                <div class="range-heading"><label for="chat-temperature">温度</label><output id="chat-temperature-value">0.70</output></div>
+                <input class="range-input" id="chat-temperature" type="range" min="0" max="1" step="0.05" value="0.7">
+              </div>
+              <div class="inspector-section">
+                <label class="field-label" for="chat-max-tokens"><span>最大输出</span><span class="mono">输出</span></label>
+                <select id="chat-max-tokens">
+                  <option value="1024">1,024</option>
+                  <option value="2048" selected>2,048</option>
+                  <option value="4096">4,096</option>
+                  <option value="8192">8,192</option>
+                </select>
+              </div>
+              <div class="inspector-section">
+                <label class="toggle-row" for="chat-thinking">
+                  <span><strong>思考模式</strong><small>用于编码与推理任务</small></span>
+                  <input id="chat-thinking" type="checkbox">
+                  <span class="toggle-ui" aria-hidden="true"></span>
+                </label>
+              </div>
+              <div class="inspector-section">
+                <label class="toggle-row" for="chat-auto-fullscreen">
+                  <span><strong>对话自动全屏</strong><small>发送消息时自动进入全屏视图</small></span>
+                  <input id="chat-auto-fullscreen" type="checkbox" checked>
+                  <span class="toggle-ui" aria-hidden="true"></span>
+                </label>
+              </div>
+              <div class="inspector-footnote"><i data-lucide="shield-check" aria-hidden="true"></i><span>请求仅发送到 Agnes API</span></div>
+            </div>
+
+            <div class="inspector-content is-hidden" id="inspector-image">
+              <div class="inspector-section">
+                <div class="inspector-section-title"><span>模型</span><span class="mono">图像</span></div>
+                <div class="model-readout"><span class="model-orb orange-orb"></span><span>agnes-image-2.1-flash</span><i data-lucide="lock-keyhole" aria-hidden="true"></i></div>
+              </div>
+              <div class="inspector-section">
+                <div class="inspector-section-title"><span>输出档位</span><span class="mono">尺寸</span></div>
+                <div class="choice-grid four-columns" id="image-size-choices">
+                  <button class="choice-button" type="button" data-image-size="1K">1K</button>
+                  <button class="choice-button is-active" type="button" data-image-size="2K">2K</button>
+                  <button class="choice-button" type="button" data-image-size="3K">3K</button>
+                  <button class="choice-button" type="button" data-image-size="4K">4K</button>
+                </div>
+              </div>
+              <div class="inspector-section">
+                <div class="inspector-section-title"><span>宽高比</span><span class="mono">比例</span></div>
+                <div class="choice-grid three-columns" id="image-ratio-choices">
+                  <button class="choice-button is-active" type="button" data-image-ratio="1:1">1:1</button>
+                  <button class="choice-button" type="button" data-image-ratio="16:9">16:9</button>
+                  <button class="choice-button" type="button" data-image-ratio="9:16">9:16</button>
+                  <button class="choice-button" type="button" data-image-ratio="4:3">4:3</button>
+                  <button class="choice-button" type="button" data-image-ratio="3:4">3:4</button>
+                  <button class="choice-button" type="button" data-image-ratio="2:3">2:3</button>
+                  <button class="choice-button" type="button" data-image-ratio="3:2">3:2</button>
+                  <button class="choice-button" type="button" data-image-ratio="21:9">21:9</button>
+                </div>
+              </div>
+              <div class="inspector-footnote"><i data-lucide="info" aria-hidden="true"></i><span>图生图参考图会放入 extra_body.image</span></div>
+            </div>
+
+            <div class="inspector-content is-hidden" id="inspector-video">
+              <div class="inspector-section">
+                <div class="inspector-section-title"><span>模型</span><span class="mono">视频</span></div>
+                <div class="model-readout"><span class="model-orb cyan-orb"></span><span>agnes-video-v2.0</span><i data-lucide="lock-keyhole" aria-hidden="true"></i></div>
+              </div>
+              <div class="inspector-section">
+                <div class="inspector-section-title"><span>时长</span><span class="mono">帧数</span></div>
+                <div class="choice-grid two-columns" id="video-duration-choices">
+                  <button class="choice-button" type="button" data-video-duration="3">3 秒 <small>81</small></button>
+                  <button class="choice-button is-active" type="button" data-video-duration="5">5 秒 <small>121</small></button>
+                  <button class="choice-button" type="button" data-video-duration="10">10 秒 <small>241</small></button>
+                  <button class="choice-button" type="button" data-video-duration="18">18 秒 <small>441</small></button>
+                </div>
+              </div>
+              <div class="inspector-section">
+                <div class="inspector-section-title"><span>宽高比</span><span class="mono">画布</span></div>
+                <div class="choice-grid three-columns" id="video-ratio-choices">
+                  <button class="choice-button is-active" type="button" data-video-ratio="16:9">16:9</button>
+                  <button class="choice-button" type="button" data-video-ratio="9:16">9:16</button>
+                  <button class="choice-button" type="button" data-video-ratio="1:1">1:1</button>
+                  <button class="choice-button" type="button" data-video-ratio="4:3">4:3</button>
+                  <button class="choice-button" type="button" data-video-ratio="3:4">3:4</button>
+                </div>
+              </div>
+              <div class="inspector-section">
+                <label class="field-label" for="video-frame-rate"><span>帧率</span><span class="mono">每秒帧数</span></label>
+                <select id="video-frame-rate">
+                  <option value="24" selected>24 fps</option>
+                  <option value="30">30 fps</option>
+                  <option value="60">60 fps</option>
+                </select>
+              </div>
+              <div class="inspector-section">
+                <label class="field-label" for="video-negative-prompt"><span>反向提示词</span><span class="mono">可选</span></label>
+                <textarea id="video-negative-prompt" rows="3" placeholder="避免出现的元素"></textarea>
+              </div>
+              <div class="inspector-section">
+                <label class="field-label" for="video-seed"><span>随机种子</span><span class="mono">可选</span></label>
+                <input id="video-seed" type="number" placeholder="留空使用随机值">
+              </div>
+            </div>
+
+            <div class="inspector-content is-hidden" id="inspector-works">
+              <div class="inspector-section">
+                <div class="inspector-section-title"><span>本地作品</span><span class="mono">存储</span></div>
+                <div class="works-stat"><strong id="inspector-work-total">0</strong><span>条媒体记录</span></div>
+                <div class="works-stat-row"><span>图像</span><strong id="inspector-image-total">0</strong></div>
+                <div class="works-stat-row"><span>视频</span><strong id="inspector-video-total">0</strong></div>
+              </div>
+              <div class="inspector-section">
+                <div class="storage-note"><i data-lucide="database" aria-hidden="true"></i><span>仅保存媒体 URL、提示词摘要和生成元数据。</span></div>
+              </div>
+              <div class="inspector-footnote"><i data-lucide="lock" aria-hidden="true"></i><span>API 密钥不进入作品记录</span></div>
+            </div>
+          </aside>
+        </div>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="key-modal" hidden>
+      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="key-modal-title">
+         <div class="modal-topline"><span class="section-kicker"><span class="signal-line"></span> 连接设置</span><button class="icon-button small" type="button" id="close-key-settings" aria-label="关闭设置" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button></div>
+         <h2 id="key-modal-title">连接 Agnes API</h2>
+         <p class="modal-copy">API 密钥仅保存在当前浏览器的 localStorage 中，不会上传到其他服务。</p>
+         <label class="field-label" for="api-key-input"><span>API 密钥</span><span class="mono">Bearer</span></label>
+        <div class="secret-input-wrap">
+          <input id="api-key-input" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
+          <button class="icon-button small" type="button" id="toggle-key-visibility" aria-label="显示 API 密钥" data-tooltip="显示 / 隐藏"><i data-lucide="eye" aria-hidden="true"></i></button>
+        </div>
+        <div class="modal-warning"><i data-lucide="triangle-alert" aria-hidden="true"></i><span>不要在共享设备或公开页面中保存真实密钥。</span></div>
+         <div class="modal-actions"><button class="text-button" type="button" id="clear-api-key"><i data-lucide="trash-2" aria-hidden="true"></i>清除本地密钥</button><button class="primary-action" type="button" id="save-api-key">保存密钥 <i data-lucide="check" aria-hidden="true"></i></button></div>
+      </section>
+    </div>
+
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>
