@@ -1713,8 +1713,10 @@ async function handleImageFiles(event) {
 
 function renderImageReferences() {
   const maxRefs = imageModeMaxRefs();
+  const grid = $('#image-reference-grid');
   $('#image-reference-count').textContent = `${imageReferences.length} / ${maxRefs}`;
-  $('#image-reference-grid').innerHTML = imageReferences.map((reference) => `<div class="reference-tile" data-reference-id="${reference.id}"><img draggable="false" src="${escapeHtml(reference.dataUrl || reference.url)}" alt="${escapeHtml(reference.name)}"><button type="button" data-reference-action="remove" data-reference-id="${reference.id}" aria-label="移除参考图"><i data-lucide="x" aria-hidden="true"></i></button></div>`).join('');
+  grid.innerHTML = imageReferences.map((reference) => `<div class="reference-tile" data-reference-id="${reference.id}"><img draggable="false" src="${escapeHtml(reference.dataUrl || reference.url)}" alt="${escapeHtml(reference.name)}"><button type="button" data-reference-action="remove" data-reference-id="${reference.id}" aria-label="移除参考图"><i data-lucide="x" aria-hidden="true"></i></button></div>`).join('');
+  grid.classList.toggle('is-reorderable', imageReferences.length > 1);
   const full = imageReferences.length >= maxRefs;
   const zone = $('#image-drop-zone');
   if (zone) {
@@ -1735,6 +1737,8 @@ function handleReferenceAction(event) {
 }
 
 let refDragClickGuard = false;
+let activeMediaDragLayer = null;
+const referenceFlipAnimations = new WeakMap();
 
 function handleReferenceGridClick(event) {
   if (refDragClickGuard) { event.preventDefault(); return; }
@@ -1755,15 +1759,98 @@ function animateReferenceFlip(elements, firstRects) {
   elements.forEach((element) => {
     const first = firstRects.get(element);
     if (!first || typeof element.animate !== 'function') return;
+    referenceFlipAnimations.get(element)?.cancel();
     const last = element.getBoundingClientRect();
     const dx = first.left - last.left;
     const dy = first.top - last.top;
     if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-    element.animate(
+    const animation = element.animate(
       [{ transform: `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px)` }, { transform: 'translate(0, 0)' }],
       { duration: 200, easing: 'cubic-bezier(0.22, 0.61, 0.36, 1)' }
     );
+    referenceFlipAnimations.set(element, animation);
+    animation.addEventListener('finish', () => {
+      if (referenceFlipAnimations.get(element) === animation) referenceFlipAnimations.delete(element);
+    }, { once: true });
   });
+}
+
+// 浮层挂到 body，避免工作区的 transform 坐标系和 overflow 裁剪影响拖拽。
+function createMediaDragLayer(tile, rect, startX, startY) {
+  if (activeMediaDragLayer) return null;
+  const layer = document.createElement('div');
+  const visual = tile.cloneNode(true);
+  layer.className = 'media-drag-layer';
+  layer.style.width = `${rect.width}px`;
+  layer.style.height = `${rect.height}px`;
+  visual.classList.remove('is-drag-source', 'is-drop-target', 'is-dragging');
+  visual.classList.add('media-drag-visual');
+  visual.removeAttribute('id');
+  visual.setAttribute('aria-hidden', 'true');
+  visual.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
+  visual.querySelectorAll('button').forEach((button) => button.remove());
+  layer.appendChild(visual);
+  document.body.appendChild(layer);
+
+  const grabOffsetX = startX - rect.left;
+  const grabOffsetY = startY - rect.top;
+  let left = rect.left;
+  let top = rect.top;
+  let frame = 0;
+  let settleTimer = 0;
+  let transitionHandler = null;
+  let settled = false;
+
+  const draw = () => {
+    frame = 0;
+    layer.style.transform = `translate3d(${left.toFixed(1)}px, ${top.toFixed(1)}px, 0)`;
+  };
+  const flush = () => {
+    if (frame) window.cancelAnimationFrame(frame);
+    draw();
+  };
+  const destroy = () => {
+    if (frame) window.cancelAnimationFrame(frame);
+    if (settleTimer) window.clearTimeout(settleTimer);
+    if (transitionHandler) layer.removeEventListener('transitionend', transitionHandler);
+    layer.remove();
+    if (activeMediaDragLayer === api) activeMediaDragLayer = null;
+  };
+  const move = (clientX, clientY) => {
+    if (settled) return;
+    left = clientX - grabOffsetX;
+    top = clientY - grabOffsetY;
+    if (!frame) frame = window.requestAnimationFrame(draw);
+  };
+  const settleTo = (targetRect, onComplete, { immediate = false } = {}) => {
+    if (settled || !targetRect) return;
+    settled = true;
+    flush();
+    const complete = () => {
+      if (!layer.isConnected) return;
+      destroy();
+      onComplete?.();
+    };
+    left = targetRect.left;
+    top = targetRect.top;
+    if (immediate || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      draw();
+      window.queueMicrotask ? window.queueMicrotask(complete) : Promise.resolve().then(complete);
+      return;
+    }
+    layer.classList.add('is-settling');
+    void layer.offsetWidth;
+    transitionHandler = (event) => {
+      if (event.target === layer && event.propertyName === 'transform') complete();
+    };
+    layer.addEventListener('transitionend', transitionHandler);
+    draw();
+    settleTimer = window.setTimeout(complete, 260);
+  };
+  const api = { move, settleTo, remove: destroy };
+  activeMediaDragLayer = api;
+  draw();
+  return api;
 }
 
 function startPointerReorderGesture(event, { tile, onStart, onMove, onDrop, onCancel }) {
@@ -1772,6 +1859,7 @@ function startPointerReorderGesture(event, { tile, onStart, onMove, onDrop, onCa
   const pointerId = event.pointerId;
   const startX = event.clientX;
   const startY = event.clientY;
+  const dragThreshold = event.pointerType === 'touch' ? 10 : 6;
   let phase = 'pressed';
   let ended = false;
 
@@ -1787,6 +1875,7 @@ function startPointerReorderGesture(event, { tile, onStart, onMove, onDrop, onCa
     tile.removeEventListener('lostpointercapture', handleCancel);
     window.removeEventListener('blur', handleCancel);
     document.removeEventListener('visibilitychange', handleVisibility);
+    document.removeEventListener('keydown', handleKeydown);
   };
   const finish = (kind, endEvent) => {
     if (ended) return;
@@ -1800,16 +1889,18 @@ function startPointerReorderGesture(event, { tile, onStart, onMove, onDrop, onCa
   const handleMove = (moveEvent) => {
     if (ended || moveEvent.pointerId !== pointerId) return;
     if (phase === 'pressed') {
-      if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) <= 8) return;
+      if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) <= dragThreshold) return;
       phase = 'dragging';
       onStart?.(startX, startY);
     }
     moveEvent.preventDefault();
-    onMove?.(moveEvent);
+    const coalesced = moveEvent.getCoalescedEvents?.();
+    onMove?.(coalesced?.length ? coalesced[coalesced.length - 1] : moveEvent);
   };
   const handleDrop = (dropEvent) => finish('drop', dropEvent);
   const handleCancel = () => finish('cancel');
   const handleVisibility = () => { if (document.hidden) handleCancel(); };
+  const handleKeydown = (keyEvent) => { if (keyEvent.key === 'Escape') handleCancel(); };
 
   document.addEventListener('pointermove', handleMove);
   document.addEventListener('pointerup', handleDrop);
@@ -1817,37 +1908,51 @@ function startPointerReorderGesture(event, { tile, onStart, onMove, onDrop, onCa
   tile.addEventListener('lostpointercapture', handleCancel);
   window.addEventListener('blur', handleCancel);
   document.addEventListener('visibilitychange', handleVisibility);
+  document.addEventListener('keydown', handleKeydown);
   try { tile.setPointerCapture(pointerId); } catch (error) { /* 当前浏览器不支持指针捕获 */ }
 }
 
-function findReferenceDropTarget(container, selector, tile, clientX, clientY) {
-  return Array.from(container.querySelectorAll(selector)).find((candidate) => {
-    if (candidate === tile) return false;
+function findReferenceDropTarget(container, tile, placeholder, clientX, clientY) {
+  const containerRect = container.getBoundingClientRect();
+  const padding = 18;
+  if (clientX < containerRect.left - padding || clientX > containerRect.right + padding || clientY < containerRect.top - padding || clientY > containerRect.bottom + padding) return null;
+  let closest = null;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of container.children) {
+    if (candidate !== placeholder && (!candidate.matches?.('.reference-tile') || candidate === tile)) continue;
     const rect = candidate.getBoundingClientRect();
-    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
-  }) || null;
+    const dx = (clientX - rect.left - rect.width / 2) / Math.max(rect.width, 1);
+    const dy = (clientY - rect.top - rect.height / 2) / Math.max(rect.height, 1);
+    const distance = Math.hypot(dx, dy);
+    if (distance >= closestDistance) continue;
+    closest = candidate;
+    closestDistance = distance;
+  }
+  return closest;
 }
 
 function startReferenceDrag(event) {
+  if (activeMediaDragLayer) return;
   const tile = event.target.closest('.reference-tile');
   if (!tile || event.target.closest('[data-reference-action="remove"]')) return;
   if (imageReferences.length < 2) return;
   const grid = $('#image-reference-grid');
   if (!grid) return;
+  const draggedId = tile.dataset.referenceId;
+  if (!draggedId || !imageReferences.some((reference) => reference.id === draggedId)) return;
   const originOrder = [...imageReferences];
   const draftOrder = [...originOrder];
-  let grabOffsetX = 0;
-  let grabOffsetY = 0;
   let currentTarget = null;
   let placeholder = null;
+  let dragLayer = null;
 
-  const clearVisualState = () => {
+  const clearTarget = () => {
     if (currentTarget) currentTarget.classList.remove('is-drop-target');
-    document.body.classList.remove('ref-dragging');
-    tile.classList.remove('is-dragging');
-    tile.style.transform = '';
+    currentTarget = null;
   };
   const resetSource = () => {
+    tile.classList.remove('is-drag-source');
+    tile.removeAttribute('aria-hidden');
     tile.style.position = '';
     tile.style.left = '';
     tile.style.top = '';
@@ -1855,39 +1960,73 @@ function startReferenceDrag(event) {
     tile.style.height = '';
     tile.style.zIndex = '';
     tile.style.margin = '';
-    tile.style.transform = '';
+    tile.style.pointerEvents = '';
   };
   const visualNodes = () => Array.from(grid.children).filter((node) => node === placeholder || (node.matches?.('.reference-tile') && node !== tile));
-  const isInside = (element, clientX, clientY) => {
-    if (!element) return false;
-    const rect = element.getBoundingClientRect();
-    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
-  };
-  const restoreOrigin = () => {
-    const elements = Array.from(grid.querySelectorAll('.reference-tile'));
-    const firstRects = new Map(elements.filter((element) => element !== tile).map((element) => [element, { left: element.getBoundingClientRect().left, top: element.getBoundingClientRect().top }]));
+  const restorePlaceholder = () => {
+    const elements = Array.from(grid.querySelectorAll('.reference-tile')).filter((element) => element !== tile);
+    const firstRects = new Map(elements.map((element) => [element, element.getBoundingClientRect()]));
     const byId = new Map(elements.map((element) => [element.dataset.referenceId, element]));
     originOrder.forEach((reference) => {
+      if (reference.id === draggedId) {
+        grid.appendChild(placeholder);
+        return;
+      }
       const element = byId.get(reference.id);
       if (element) grid.appendChild(element);
     });
-    placeholder?.remove();
-    placeholder = null;
-    resetSource();
-    animateReferenceFlip(elements.filter((element) => element !== tile), firstRects);
+    draftOrder.splice(0, draftOrder.length, ...originOrder);
+    animateReferenceFlip(elements, firstRects);
   };
-  const applyTransform = (clientX, clientY) => {
-    tile.style.left = `${clientX - grabOffsetX}px`;
-    tile.style.top = `${clientY - grabOffsetY}px`;
-    tile.style.transform = 'rotate(2deg) scale(1.06)';
+  const updateDropTarget = (clientX, clientY) => {
+    const target = findReferenceDropTarget(grid, tile, placeholder, clientX, clientY);
+    if (target !== currentTarget) {
+      clearTarget();
+      currentTarget = target;
+      if (currentTarget) currentTarget.classList.add('is-drop-target');
+    }
+    if (!target || target === placeholder) return target;
+    const list = visualNodes();
+    const from = list.indexOf(placeholder);
+    const over = list.indexOf(target);
+    if (from < 0 || over < 0 || over === from) return target;
+    const animated = list.filter((element) => element !== placeholder);
+    const firstRects = new Map(animated.map((element) => [element, element.getBoundingClientRect()]));
+    const [moved] = draftOrder.splice(from, 1);
+    draftOrder.splice(over, 0, moved);
+    if (over < from) grid.insertBefore(placeholder, target);
+    else grid.insertBefore(placeholder, target.nextSibling);
+    animateReferenceFlip(animated, firstRects);
+    return target;
+  };
+  const finishDrag = (commit, { immediate = false } = {}) => {
+    clearTarget();
+    document.body.classList.remove('ref-dragging');
+    const destination = placeholder?.getBoundingClientRect();
+    if (!dragLayer || !destination) {
+      placeholder?.remove();
+      resetSource();
+      return;
+    }
+    dragLayer.settleTo(destination, () => {
+      if (placeholder?.isConnected) grid.insertBefore(tile, placeholder);
+      placeholder?.remove();
+      placeholder = null;
+      resetSource();
+      if (commit) {
+        imageReferences = [...draftOrder];
+        renderImageReferences();
+      }
+      dragLayer = null;
+    }, { immediate });
   };
 
   startPointerReorderGesture(event, {
     tile,
     onStart: (startX, startY) => {
       const rect = tile.getBoundingClientRect();
-      grabOffsetX = startX - rect.left;
-      grabOffsetY = startY - rect.top;
+      dragLayer = createMediaDragLayer(tile, rect, startX, startY);
+      if (!dragLayer) return;
       placeholder = document.createElement('div');
       placeholder.className = 'reference-drag-placeholder';
       placeholder.style.width = `${rect.width}px`;
@@ -1898,58 +2037,31 @@ function startReferenceDrag(event) {
       tile.style.top = `${rect.top}px`;
       tile.style.width = `${rect.width}px`;
       tile.style.height = `${rect.height}px`;
-      tile.style.zIndex = '20';
       tile.style.margin = '0';
+      tile.style.pointerEvents = 'none';
+      tile.classList.add('is-drag-source');
+      tile.setAttribute('aria-hidden', 'true');
       document.body.classList.add('ref-dragging');
-      tile.classList.add('is-dragging');
-      applyTransform(startX, startY);
     },
     onMove: (moveEvent) => {
-      const target = findReferenceDropTarget(grid, '.reference-tile', tile, moveEvent.clientX, moveEvent.clientY);
-      const dropTarget = target || (isInside(placeholder, moveEvent.clientX, moveEvent.clientY) ? placeholder : null);
-      const targetChanged = dropTarget !== currentTarget;
-      if (targetChanged) {
-        if (currentTarget) currentTarget.classList.remove('is-drop-target');
-        currentTarget = dropTarget;
-        if (currentTarget) currentTarget.classList.add('is-drop-target');
-      }
-      if (targetChanged && target) {
-        const list = visualNodes();
-        const from = list.indexOf(placeholder);
-        const over = list.indexOf(target);
-        if (over !== from) {
-          const animated = list.filter((element) => element !== placeholder);
-          const firstRects = new Map(animated.map((element) => [element, { left: element.getBoundingClientRect().left, top: element.getBoundingClientRect().top }]));
-          const [moved] = draftOrder.splice(from, 1);
-          draftOrder.splice(over, 0, moved);
-          if (over < from) grid.insertBefore(placeholder, target);
-          else grid.insertBefore(placeholder, target.nextSibling);
-          animateReferenceFlip(animated, firstRects);
-        }
-      }
-      applyTransform(moveEvent.clientX, moveEvent.clientY);
+      if (!dragLayer || !placeholder) return;
+      dragLayer.move(moveEvent.clientX, moveEvent.clientY);
+      updateDropTarget(moveEvent.clientX, moveEvent.clientY);
     },
     onDrop: (dropEvent) => {
-      const target = findReferenceDropTarget(grid, '.reference-tile', tile, dropEvent.clientX, dropEvent.clientY);
+      if (!dragLayer || !placeholder) return;
+      const target = updateDropTarget(dropEvent.clientX, dropEvent.clientY);
       const hasDraftChange = draftOrder.some((reference, index) => reference.id !== originOrder[index]?.id);
-      const valid = Boolean((target && target !== tile) || (hasDraftChange && isInside(placeholder, dropEvent.clientX, dropEvent.clientY)));
-      clearVisualState();
-      if (valid) {
-        grid.insertBefore(tile, placeholder);
-        placeholder?.remove();
-        placeholder = null;
-        resetSource();
-        imageReferences = draftOrder;
-        renderImageReferences();
-      } else {
-        restoreOrigin();
-      }
+      const valid = Boolean(target && hasDraftChange);
+      if (!valid) restorePlaceholder();
       markReferenceDragClick();
+      finishDrag(valid);
     },
     onCancel: () => {
-      clearVisualState();
-      restoreOrigin();
+      if (!dragLayer || !placeholder) return;
+      restorePlaceholder();
       markReferenceDragClick();
+      finishDrag(false, { immediate: document.hidden });
     }
   });
 }
@@ -1960,8 +2072,9 @@ function markReferenceDragClick() {
 }
 
 function startKeyframeDrag(event) {
+  if (activeMediaDragLayer) return;
   if (event.target.closest('[data-video-ref-action]')) return;
-  if (videoKeyframeRefs.length < 2 || videoKeyframeRefs.some((ref) => !ref)) return;
+  if (![0, 1].every((index) => Boolean(videoKeyframeRefs[index]))) return;
   const tile = event.target.closest('.video-ref-shot');
   const pair = event.currentTarget.querySelector('.video-ref-pair');
   if (!tile || !pair) return;
@@ -1969,69 +2082,89 @@ function startKeyframeDrag(event) {
   const from = Number(tile.dataset.videoRefIndex);
   if (!Number.isInteger(from) || !slots[from]) return;
   const originOrder = [...videoKeyframeRefs];
-  const slotCenters = slots.map((slot) => {
-    const rect = slot.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-  });
-  const startRect = tile.getBoundingClientRect();
-  const grabOffsetX = event.clientX - (startRect.left + startRect.width / 2);
-  const grabOffsetY = event.clientY - (startRect.top + startRect.height / 2);
-  let targetIndex = -1;
-  let layoutCenter = slotCenters[from];
   let currentTarget = null;
-  const applyTransform = (clientX, clientY) => {
-    tile.style.transform = `translate(${(clientX - grabOffsetX - layoutCenter.x).toFixed(1)}px, ${(clientY - grabOffsetY - layoutCenter.y).toFixed(1)}px) rotate(2deg) scale(1.06)`;
-  };
-  const clearVisualState = () => {
+  let dragLayer = null;
+  const clearTarget = () => {
     if (currentTarget) currentTarget.classList.remove('is-drop-target');
+    currentTarget = null;
+  };
+  const clearDraggingState = () => {
+    clearTarget();
     document.body.classList.remove('ref-dragging');
-    tile.classList.remove('is-dragging');
-    tile.style.transform = '';
   };
   const findTarget = (clientX, clientY) => slots.find((slot, index) => {
     if (index === from) return false;
     const rect = slot.getBoundingClientRect();
-    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+    const padding = 10;
+    return clientX >= rect.left - padding && clientX <= rect.right + padding && clientY >= rect.top - padding && clientY <= rect.bottom + padding;
   }) || null;
+  const updateTarget = (clientX, clientY) => {
+    const target = findTarget(clientX, clientY);
+    if (target !== currentTarget) {
+      clearTarget();
+      currentTarget = target;
+      if (currentTarget) currentTarget.classList.add('is-drop-target');
+    }
+    return target;
+  };
+  const settleBack = ({ immediate = false } = {}) => {
+    clearDraggingState();
+    const sourceRect = tile.getBoundingClientRect();
+    dragLayer?.settleTo(sourceRect, () => {
+      tile.classList.remove('is-drag-source');
+      dragLayer = null;
+    }, { immediate });
+  };
 
   startPointerReorderGesture(event, {
     tile,
     onStart: (startX, startY) => {
+      const startRect = tile.getBoundingClientRect();
+      dragLayer = createMediaDragLayer(tile, startRect, startX, startY);
+      if (!dragLayer) return;
       document.body.classList.add('ref-dragging');
-      tile.classList.add('is-dragging');
-      applyTransform(startX, startY);
+      tile.classList.add('is-drag-source');
     },
     onMove: (moveEvent) => {
-      const target = findTarget(moveEvent.clientX, moveEvent.clientY);
-      const nextIndex = target ? slots.indexOf(target) : -1;
-      if (target !== currentTarget) {
-        if (currentTarget) currentTarget.classList.remove('is-drop-target');
-        currentTarget = target;
-        if (currentTarget) currentTarget.classList.add('is-drop-target');
-      }
-      if (nextIndex >= 0) {
-        targetIndex = nextIndex;
-        layoutCenter = slotCenters[targetIndex];
-      }
-      applyTransform(moveEvent.clientX, moveEvent.clientY);
+      if (!dragLayer) return;
+      dragLayer.move(moveEvent.clientX, moveEvent.clientY);
+      updateTarget(moveEvent.clientX, moveEvent.clientY);
     },
     onDrop: (dropEvent) => {
-      const target = findTarget(dropEvent.clientX, dropEvent.clientY);
+      if (!dragLayer) return;
+      const target = updateTarget(dropEvent.clientX, dropEvent.clientY);
       const dropIndex = target ? slots.indexOf(target) : -1;
       const valid = dropIndex >= 0;
-      clearVisualState();
-      if (valid) {
+      markReferenceDragClick();
+      if (!valid) {
+        settleBack();
+        return;
+      }
+      const targetTile = target.querySelector('.video-ref-shot');
+      const targetRect = target.getBoundingClientRect();
+      const sourceRect = slots[from].getBoundingClientRect();
+      clearDraggingState();
+      if (targetTile && typeof targetTile.animate === 'function' && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+        targetTile.classList.add('is-swap-counterpart');
+        targetTile.animate(
+          [
+            { transform: 'translate3d(0, 0, 0) scale(1)', opacity: 1 },
+            { transform: `translate3d(${(sourceRect.left - targetRect.left).toFixed(1)}px, ${(sourceRect.top - targetRect.top).toFixed(1)}px, 0) scale(0.985)`, opacity: 0.82 }
+          ],
+          { duration: 180, easing: 'cubic-bezier(0.22, 0.61, 0.36, 1)', fill: 'forwards' }
+        );
+      }
+      dragLayer.settleTo(targetRect, () => {
+        videoKeyframeRefs = [...originOrder];
         [videoKeyframeRefs[from], videoKeyframeRefs[dropIndex]] = [videoKeyframeRefs[dropIndex], videoKeyframeRefs[from]];
         renderVideoRefs();
-      } else {
-        videoKeyframeRefs = originOrder;
-      }
-      markReferenceDragClick();
+        dragLayer = null;
+      });
     },
     onCancel: () => {
-      videoKeyframeRefs = originOrder;
-      clearVisualState();
+      if (!dragLayer) return;
       markReferenceDragClick();
+      settleBack({ immediate: document.hidden });
     }
   });
 }
@@ -2118,6 +2251,8 @@ function renderVideoRefs() {
     if (!slot) return;
     slot.innerHTML = videoKeyframeRefs[index] ? videoRefTileMarkup(videoKeyframeRefs[index], index) : videoRefEmptyMarkup('添加关键帧');
   });
+  const pair = $('#video-keyframe-inputs .video-ref-pair');
+  if (pair) pair.classList.toggle('is-reorderable', [0, 1].every((index) => Boolean(videoKeyframeRefs[index])));
   refreshIcons();
 }
 
