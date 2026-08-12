@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#111414">
     <meta name="description" content="Agnes 创作工作台">
-    <title>Agnes 创作工作台 v2.17.0</title>
+    <title>Agnes 创作工作台 v2.20.4</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=2.17.0">
+    <link rel="stylesheet" href="styles.css?v=2.20.4">
     <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-    <script defer src="app.js?v=2.17.0"></script>
+    <script defer src="app.js?v=2.20.4"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -56,15 +56,6 @@
 
         <div class="sidebar-spacer"></div>
 
-        <button class="key-nav-button" type="button" id="sidebar-key-settings">
-          <span class="key-nav-icon"><i data-lucide="key-round" aria-hidden="true"></i></span>
-          <span class="key-nav-copy">
-            <strong>API 密钥</strong>
-            <small id="sidebar-key-state">未配置</small>
-          </span>
-          <i data-lucide="arrow-up-right" aria-hidden="true"></i>
-        </button>
-
         <div class="sidebar-foot">
           <span>Agnes API / v1</span>
           <span class="mono">本地-01</span>
@@ -79,14 +70,11 @@
             <span class="breadcrumb-current" id="mode-breadcrumb">文本对话</span>
           </div>
           <div class="topbar-actions">
-            <div class="api-status" id="api-status" aria-live="polite">
+            <button class="api-status" id="api-status" type="button" aria-live="polite" aria-label="打开连接设置">
               <span class="status-light" id="api-status-dot" aria-hidden="true"></span>
-              <span id="api-status-text">未配置密钥</span>
-            </div>
-            <button class="icon-button" type="button" id="open-key-settings" aria-label="设置 API 密钥" data-tooltip="设置 API 密钥">
-              <i data-lucide="key-round" aria-hidden="true"></i>
+              <span class="api-status-copy"><span id="api-status-endpoint">国际站</span><span class="api-status-separator" aria-hidden="true">·</span><span id="api-status-text">未配置</span></span>
             </button>
-            <button class="icon-button mobile-only" type="button" id="mobile-inspector-toggle" aria-label="打开设置面板" data-tooltip="设置面板">
+            <button class="icon-button mobile-only" type="button" id="mobile-inspector-toggle" aria-label="打开设置面板" aria-controls="inspector-panel" aria-expanded="false" data-tooltip="设置面板">
               <i data-lucide="sliders-horizontal" aria-hidden="true"></i>
             </button>
           </div>
@@ -137,28 +125,17 @@
                 <form class="composer" id="chat-form">
                   <div class="vision-input-panel" id="chat-vision-panel" hidden>
                     <div class="inline-label"><i data-lucide="scan-eye" aria-hidden="true"></i> 图像理解</div>
-                    <div class="chat-image-source-switch" role="tablist" aria-label="图像来源">
-                      <button class="segment-button is-active" type="button" role="tab" data-chat-image-source="upload">上传图片</button>
-                      <button class="segment-button" type="button" role="tab" data-chat-image-source="url">图片 URL</button>
-                    </div>
-                    <div id="chat-image-upload-source">
-                      <label class="chat-upload-zone" for="chat-image-file-input">
+                    <div class="chat-image-source-actions" aria-label="图像来源">
+                      <label class="chat-upload-zone" id="chat-image-drop-zone" for="chat-image-file-input">
                         <i data-lucide="upload" aria-hidden="true"></i>
-                        <span>选择本地图片</span>
+                        <span>拖入或选择本地图片</span>
                         <small>图片会转换为 Data URI，仅发送到 Agnes</small>
                         <input id="chat-image-file-input" type="file" accept="image/*">
                       </label>
-                      <div id="chat-image-preview" hidden></div>
+                      <button class="chat-source-button" type="button" id="chat-pick-work"><i data-lucide="folder-open" aria-hidden="true"></i><span>作品集</span></button>
+                      <button class="chat-source-button" type="button" id="chat-pick-link"><i data-lucide="link" aria-hidden="true"></i><span>图片链接</span></button>
                     </div>
-                    <div id="chat-image-url-source" hidden>
-                      <div class="inline-input-row">
-                        <input id="chat-image-url" type="url" placeholder="https://example.com/image.jpg" autocomplete="off">
-                        <button class="icon-button small" type="button" id="chat-clear-image" aria-label="清除图像 URL" data-tooltip="清除图像 URL">
-                          <i data-lucide="x" aria-hidden="true"></i>
-                        </button>
-                      </div>
-                      <small class="vision-helper">需要公开可访问的 HTTPS 图片地址</small>
-                    </div>
+                    <div id="chat-image-preview" hidden></div>
                   </div>
                   <textarea id="chat-input" rows="3" placeholder="写下你的想法，回车发送；Shift + 回车换行"></textarea>
                   <div class="composer-footer">
@@ -290,6 +267,33 @@
                     <label class="field-label" for="video-prompt"><span>提示词</span><span class="field-required">必填</span></label>
                     <textarea id="video-prompt" class="large-textarea" rows="6" placeholder="主体 + 动作 + 场景 + 镜头运动 + 光线 + 风格"></textarea>
                   </div>
+                  <section class="prompt-workbench" aria-label="视频提示词工作台">
+                    <div class="prompt-workbench-head">
+                      <div>
+                        <span class="prompt-workbench-title">提示词工作台</span>
+                        <small>先选风格，再让 AI 提供灵感或定向优化</small>
+                      </div>
+                      <span class="mono">AI 助手</span>
+                    </div>
+                    <div class="prompt-tool-label"><span>风格预设</span><span id="video-style-summary">自由发挥</span></div>
+                    <div class="style-preset-list" role="listbox" aria-label="视频风格预设">
+                      <button class="style-preset is-active" type="button" data-video-style="none">自由发挥</button>
+                      <button class="style-preset" type="button" data-video-style="cinematic">电影叙事</button>
+                      <button class="style-preset" type="button" data-video-style="product">商业产品</button>
+                      <button class="style-preset" type="button" data-video-style="documentary">自然纪实</button>
+                      <button class="style-preset" type="button" data-video-style="oriental">东方意境</button>
+                      <button class="style-preset" type="button" data-video-style="neon">赛博霓虹</button>
+                      <button class="style-preset" type="button" data-video-style="film">柔和胶片</button>
+                      <button class="style-preset" type="button" data-video-style="illustration">艺术插画</button>
+                    </div>
+                    <label class="prompt-tool-label" for="video-keywords"><span>优化方向</span><span>可选</span></label>
+                    <input id="video-keywords" type="text" placeholder="例如：镜头缓慢推进、动作更自然、强化首尾帧衔接" autocomplete="off">
+                    <div class="prompt-tool-actions">
+                      <button class="prompt-tool-button" type="button" id="video-random-prompt"><i data-lucide="dice-5" aria-hidden="true"></i><span>随机灵感</span></button>
+                      <button class="prompt-tool-button is-primary" type="button" id="video-optimize-prompt"><i data-lucide="wand-sparkles" aria-hidden="true"></i><span>优化提示词</span></button>
+                    </div>
+                    <div class="prompt-workbench-note" id="video-prompt-note"><i data-lucide="info" aria-hidden="true"></i><span>当前风格会在创建任务时自动加入提示词。</span></div>
+                  </section>
                   <div class="video-inputs is-hidden" id="video-image-inputs">
                     <div class="video-ref-head"><span>首帧参考图</span><span class="mono" id="video-image-ref-count">0 / 1</span></div>
                     <div class="video-ref-grid" id="video-image-ref-grid"></div>
@@ -346,7 +350,9 @@
             </section>
           </section>
 
-          <aside class="inspector" id="inspector-panel" aria-label="创作设置">
+          <button class="mobile-inspector-backdrop" type="button" id="mobile-inspector-backdrop" aria-label="关闭设置面板" hidden></button>
+
+          <aside class="inspector" id="inspector-panel" aria-label="创作设置" aria-hidden="false">
             <div class="inspector-head">
               <div>
                 <div class="section-kicker">创作设置</div>
@@ -484,14 +490,25 @@
       <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="key-modal-title">
          <div class="modal-topline"><span class="section-kicker"><span class="signal-line"></span> 连接设置</span><button class="icon-button small" type="button" id="close-key-settings" aria-label="关闭设置" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button></div>
          <h2 id="key-modal-title">连接 Agnes API</h2>
-         <p class="modal-copy">API 密钥仅保存在当前浏览器的 localStorage 中，不会上传到其他服务。</p>
+         <p class="modal-copy">选择 API 站点并配置一个共享密钥。密钥仅保存在当前浏览器的 localStorage 中。</p>
+         <label class="field-label"><span>API 站点</span><span class="mono">Base URL</span></label>
+         <div class="connection-endpoints" id="connection-endpoints" role="tablist" aria-label="API 站点">
+           <button class="segment-button is-active" type="button" role="tab" data-connection-endpoint="international" aria-selected="true">国际站</button>
+           <button class="segment-button" type="button" role="tab" data-connection-endpoint="china" aria-selected="false">国内站</button>
+           <button class="segment-button" type="button" role="tab" data-connection-endpoint="custom" aria-selected="false">自定义</button>
+         </div>
+         <div class="custom-base-url-field" id="custom-base-url-field" hidden>
+           <label class="field-label" for="custom-base-url-input"><span>自定义 Base URL</span><span class="mono">HTTP(S)</span></label>
+           <input id="custom-base-url-input" type="url" placeholder="https://api.example.com" autocomplete="url" spellcheck="false">
+           <small class="field-helper">公网使用 HTTPS；本地调试可使用 localhost 或 127.0.0.1。</small>
+         </div>
          <label class="field-label" for="api-key-input"><span>API 密钥</span><span class="mono">Bearer</span></label>
         <div class="secret-input-wrap">
           <input id="api-key-input" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
           <button class="icon-button small" type="button" id="toggle-key-visibility" aria-label="显示 API 密钥" data-tooltip="显示 / 隐藏"><i data-lucide="eye" aria-hidden="true"></i></button>
         </div>
         <div class="modal-warning"><i data-lucide="triangle-alert" aria-hidden="true"></i><span>不要在共享设备或公开页面中保存真实密钥。</span></div>
-         <div class="modal-actions"><button class="text-button" type="button" id="clear-api-key"><i data-lucide="trash-2" aria-hidden="true"></i>清除本地密钥</button><button class="primary-action" type="button" id="save-api-key">保存密钥 <i data-lucide="check" aria-hidden="true"></i></button></div>
+         <div class="modal-actions"><button class="text-button" type="button" id="clear-api-key"><i data-lucide="trash-2" aria-hidden="true"></i>清除本地密钥</button><button class="primary-action" type="button" id="save-api-key">保存连接 <i data-lucide="check" aria-hidden="true"></i></button></div>
       </section>
     </div>
 

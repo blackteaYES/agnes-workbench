@@ -1,7 +1,10 @@
 'use strict';
 
 const CONFIG = {
-  baseUrl: 'https://apihub.agnes-ai.com',
+  endpoints: {
+    international: { label: '国际站', baseUrl: 'https://apihub.agnes-ai.com' },
+    china: { label: '国内站', baseUrl: 'https://apihub.agnes-ai.cn' }
+  },
   models: {
     chat: 'agnes-2.5-flash',
     image: 'agnes-image-2.1-flash',
@@ -51,6 +54,9 @@ const VIDEO_DIMENSIONS = {
   '3:4': { width: 768, height: 1024 }
 };
 
+const IMAGE_MODE_LABELS = { text: '文生图', image: '图生图', composite: '多图合成' };
+const VIDEO_MODE_LABELS = { text: '文生视频', image: '图生视频', keyframes: '关键帧动画' };
+
 const IMAGE_STYLE_PRESETS = {
   none: { label: '自由发挥', prompt: '' },
   cinematic: { label: '电影叙事', prompt: '电影级叙事画面，前中后景层次清晰，戏剧性光影，细腻质感，具有电影分镜般的视觉张力' },
@@ -60,6 +66,17 @@ const IMAGE_STYLE_PRESETS = {
   neon: { label: '赛博霓虹', prompt: '赛博朋克视觉，霓虹灯色彩，冷暖对比，潮湿反光材质，未来城市氛围，高密度细节' },
   film: { label: '柔和胶片', prompt: '柔和胶片摄影质感，细微颗粒，低饱和复古色调，自然柔光，温润耐看的画面氛围' },
   illustration: { label: '艺术插画', prompt: '精致艺术插画，明确的造型语言，富有设计感的色彩与构图，细节丰富，画面完整统一' }
+};
+
+const VIDEO_STYLE_PRESETS = {
+  none: { label: '自由发挥', prompt: '' },
+  cinematic: { label: '电影叙事', prompt: '电影级叙事镜头，主体运动与镜头调度连贯，前中后景层次清晰，戏剧性光影，节奏自然且具有视觉张力' },
+  product: { label: '商业产品', prompt: '高级商业广告影像，产品主体始终清晰，材质细节稳定，运镜克制流畅，精确布光，适合品牌与产品展示' },
+  documentary: { label: '自然纪实', prompt: '自然纪实影像，真实环境光与物理运动，手持感克制，保留现场细节，动作自然可信，色彩不过度修饰' },
+  oriental: { label: '东方意境', prompt: '东方美学动态意境，留白构图，含蓄雅致的色彩，舒缓节奏，镜头运动轻盈，细节带有传统文化气质' },
+  neon: { label: '赛博霓虹', prompt: '赛博朋克动态视觉，霓虹冷暖对比，潮湿反光材质，未来城市氛围，镜头运动利落，高密度细节保持稳定' },
+  film: { label: '柔和胶片', prompt: '柔和胶片影像质感，细微颗粒，低饱和复古色调，自然柔光，镜头运动舒缓，画面温润且时序连贯' },
+  illustration: { label: '艺术插画', prompt: '动态艺术插画，造型语言统一，色彩与构图具有设计感，动作节奏清晰，逐帧细节稳定，画面完整连贯' }
 };
 
 const IMAGE_PROMPT_GUIDES = {
@@ -90,6 +107,8 @@ const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selec
 
 let state = loadState();
 let apiKey = readStoredKey();
+let connectionStatus = 'idle';
+let connectionDraft = { endpoint: state.connection.endpoint, customBaseUrl: state.connection.customBaseUrl || '' };
 let imageReferences = [];
 let imageResult = null;
 let imageRequestController = null;
@@ -107,11 +126,10 @@ let activeRequest = null;
 let activeWorkFilter = 'all';
 let editingMessageId = null;
 let chatImage = null;
-let chatImageSource = 'upload';
-let promptAssistRequest = null;
-let promptAssistActive = 'optimize';
-let promptAssistCancelArmed = false;
-let promptAssistCancelTimer = 0;
+const promptAssistStates = {
+  image: { request: null, activeKind: 'optimize', cancelArmed: false, cancelTimer: 0 },
+  video: { request: null, activeKind: 'optimize', cancelArmed: false, cancelTimer: 0 }
+};
 let imageActivePrompt = null;
 let promptPrintStates = { image: null, video: null };
 let toastTimer = 0;
@@ -132,10 +150,11 @@ function defaultState() {
     activeChatId: null,
     chatSessions: [],
     works: [],
+    connection: { endpoint: 'international', customBaseUrl: '' },
     ui: {
       chat: { temperature: 0.7, maxTokens: 2048, thinking: false, autoFullscreen: true },
       image: { mode: 'text', size: '2K', ratio: '1:1', stylePreset: 'none', keywordDirection: '' },
-      video: { mode: 'text', duration: '5', ratio: '16:9', frameRate: '24', negativePrompt: '', seed: '' },
+      video: { mode: 'text', duration: '5', ratio: '16:9', frameRate: '24', negativePrompt: '', seed: '', stylePreset: 'none', keywordDirection: '' },
       layout: { sidebarCollapsed: true, inspectorCollapsed: true },
       workPickerAnimation: 'bounce'
     }
@@ -148,13 +167,18 @@ function loadState() {
     const raw = localStorage.getItem(CONFIG.storage.state);
     if (!raw) return fallback;
     const saved = JSON.parse(raw);
-    const next = { ...fallback, ...saved, ui: { ...fallback.ui, ...(saved.ui || {}) } };
+    const next = { ...fallback, ...saved, connection: { ...fallback.connection, ...(saved.connection || {}) }, ui: { ...fallback.ui, ...(saved.ui || {}) } };
     next.ui.chat = { ...fallback.ui.chat, ...(next.ui.chat || {}) };
     next.ui.image = { ...fallback.ui.image, ...(next.ui.image || {}) };
     next.ui.video = { ...fallback.ui.video, ...(next.ui.video || {}) };
     next.ui.layout = { ...fallback.ui.layout, ...(next.ui.layout || {}) };
     next.chatSessions = Array.isArray(next.chatSessions) ? next.chatSessions : [];
     next.works = Array.isArray(next.works) ? next.works : [];
+    next.connection.endpoint = ['international', 'china', 'custom'].includes(next.connection.endpoint) ? next.connection.endpoint : 'international';
+    next.connection.customBaseUrl = typeof next.connection.customBaseUrl === 'string' ? next.connection.customBaseUrl : '';
+    if (next.connection.endpoint === 'custom' && next.connection.customBaseUrl) {
+      try { next.connection.customBaseUrl = normalizeCustomBaseUrl(next.connection.customBaseUrl); } catch (error) { next.connection = { endpoint: 'international', customBaseUrl: '' }; }
+    }
     if (!next.activeChatId || !next.chatSessions.some((session) => session.id === next.activeChatId)) next.activeChatId = next.chatSessions[0]?.id || null;
     return next;
   } catch (error) {
@@ -233,9 +257,48 @@ function isHttpsUrl(value) {
   }
 }
 
+function normalizeCustomBaseUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) throw new Error('请输入自定义 Base URL。');
+  let url;
+  try {
+    url = new URL(raw);
+  } catch (error) {
+    throw new Error('Base URL 格式无效，请填写完整的 HTTP(S) 地址。');
+  }
+  const localHosts = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && localHosts.has(url.hostname))) {
+    throw new Error('自定义地址必须使用 HTTPS；本地调试仅允许 localhost、127.0.0.1 或 [::1]。');
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error('Base URL 不能包含账号、密码、查询参数或 hash。');
+  }
+  return `${url.origin}${url.pathname}`.replace(/\/+$/, '') || url.origin;
+}
+
+function activeConnectionLabel() {
+  if (state.connection.endpoint === 'custom') return '自定义';
+  return CONFIG.endpoints[state.connection.endpoint]?.label || CONFIG.endpoints.international.label;
+}
+
+function activeBaseUrl() {
+  if (state.connection.endpoint === 'custom') {
+    try { return normalizeCustomBaseUrl(state.connection.customBaseUrl); } catch (error) { return CONFIG.endpoints.international.baseUrl; }
+  }
+  return CONFIG.endpoints[state.connection.endpoint]?.baseUrl || CONFIG.endpoints.international.baseUrl;
+}
+
 function shortText(value, length = 70) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   return text.length > length ? `${text.slice(0, length)}...` : text;
+}
+
+function middleShortText(value, length = 84) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= length) return text;
+  const available = Math.max(12, length - 3);
+  const head = Math.ceil(available * 0.62);
+  return `${text.slice(0, head)}...${text.slice(-(available - head))}`;
 }
 
 function formatDate(timestamp) {
@@ -244,6 +307,27 @@ function formatDate(timestamp) {
   } catch (error) {
     return '--/-- --:--';
   }
+}
+
+function formatFullDate(timestamp) {
+  if (!timestamp) return '';
+  try {
+    return new Intl.DateTimeFormat('zh-CN', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    }).format(new Date(timestamp));
+  } catch (error) {
+    return '';
+  }
+}
+
+function formatMediaDuration(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return '';
+  if (value < 60) return `${value.toFixed(value < 10 ? 1 : 0)} 秒`;
+  const minutes = Math.floor(value / 60);
+  const rest = Math.floor(value % 60).toString().padStart(2, '0');
+  return `${minutes}:${rest}`;
 }
 
 function formatWaitDuration(milliseconds) {
@@ -301,6 +385,27 @@ function showToast(message, type = 'info') {
   window.setTimeout(() => toast.remove(), 4200);
 }
 
+function syncOverlayState() {
+  const hasOverlay = Boolean(document.querySelector('.modal-backdrop:not([hidden]), .preview-backdrop, .inspector.is-mobile-open'));
+  document.body.classList.toggle('overlay-open', hasOverlay);
+}
+
+function trapFocus(event, container) {
+  if (event.key !== 'Tab' || !container) return;
+  const focusable = Array.from(container.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'))
+    .filter((element) => !element.hidden && element.getClientRects().length > 0);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function showNoticeModal({ title, message, detail, confirmText = '我知道了', kicker = '下载提示' }) {
   const existing = $('#notice-modal');
   if (existing) existing.remove();
@@ -320,11 +425,12 @@ function showNoticeModal({ title, message, detail, confirmText = '我知道了',
     </section>`;
   document.body.appendChild(backdrop);
   refreshIcons();
-  const close = () => backdrop.remove();
+  const close = () => { backdrop.remove(); syncOverlayState(); };
   backdrop.querySelector('#notice-modal-close').addEventListener('click', close);
   backdrop.querySelector('#notice-modal-confirm').addEventListener('click', close);
   backdrop.addEventListener('click', (event) => { if (event.target === backdrop) close(); });
   const confirmButton = backdrop.querySelector('#notice-modal-confirm');
+  syncOverlayState();
   confirmButton.focus();
   return close;
 }
@@ -351,11 +457,12 @@ function showConfirmModal({ title, message, kicker = '二次确认', confirmText
     </section>`;
   document.body.appendChild(backdrop);
   refreshIcons();
-  const close = () => backdrop.remove();
+  const close = () => { backdrop.remove(); syncOverlayState(); };
   backdrop.querySelector('#confirm-modal-close').addEventListener('click', close);
   backdrop.querySelector('#confirm-modal-cancel').addEventListener('click', close);
   backdrop.addEventListener('click', (event) => { if (event.target === backdrop) close(); });
   backdrop.querySelector('#confirm-modal-ok').addEventListener('click', () => { close(); onConfirm(); });
+  syncOverlayState();
   backdrop.querySelector('#confirm-modal-ok').focus();
 }
 
@@ -374,13 +481,19 @@ const PICKER_ANIMS = [
 
 const COORD_ANIMS = ['kaleido', 'deal', 'magnet'];
 
-function openWorkPicker({ onPick, multi = false, max = 1, selected = [] }) {
-  const images = state.works.filter((work) => work.kind === 'image' && safeMediaUrl(work.url));
+function openWorkPicker({ onConfirm, max = 1, selected = [] }) {
+  const images = state.works
+    .filter((work) => work.kind === 'image' && safeMediaUrl(work.url))
+    .map((work) => ({ ...work, url: safeMediaUrl(work.url) }));
   if (!images.length) { showToast('作品库还没有图片作品，先完成一次图像生成吧。', 'error'); return; }
   const existing = $('#work-picker-modal');
   if (existing) existing.remove();
+  const limit = Math.max(1, Math.min(Number(max) || 1, images.length));
   let anim = PICKER_ANIMS.some((a) => a.key === state.ui.workPickerAnimation) ? state.ui.workPickerAnimation : 'bounce';
-  const selectedSet = new Set(selected.map((item) => (typeof item === 'string' ? item : item.url)));
+  const availableUrls = new Set(images.map((work) => work.url));
+  const selectedSet = new Set(selected.map((item) => safeMediaUrl(typeof item === 'string' ? item : item?.url)).filter((url) => availableUrls.has(url)).slice(0, limit));
+  let draftSelection = new Set(selectedSet);
+  const returnFocus = document.activeElement;
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
   backdrop.id = 'work-picker-modal';
@@ -391,7 +504,7 @@ function openWorkPicker({ onPick, multi = false, max = 1, selected = [] }) {
         <button class="icon-button small" type="button" id="work-picker-close" aria-label="关闭" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
       </div>
       <h2 id="work-picker-title">选择作品图片</h2>
-      <p class="modal-copy">${multi ? '单击预览大图，双击快速勾选；可多选，确认后作为参考图。' : '单击预览大图，双击或预览内选择，直接作为参考。'}</p>
+      <p class="modal-copy">选择作品图片，确认后应用为参考图。</p>
       <div class="picker-anim-row">
         <span class="picker-anim-label">入场动画</span>
         <div class="picker-anim-options">
@@ -399,18 +512,22 @@ function openWorkPicker({ onPick, multi = false, max = 1, selected = [] }) {
         </div>
       </div>
       <div class="work-picker-grid"></div>
-      ${multi ? '<div class="picker-actions"><span class="picker-count">已选 <strong id="work-picker-count">0</strong>/' + max + '</span><button class="primary-action" type="button" id="work-picker-confirm" disabled><i data-lucide="check" aria-hidden="true"></i>确定选择</button></div>' : ''}
+      <div class="picker-actions"><span class="picker-count">已选 <strong id="work-picker-count">0</strong>/${limit}</span><button class="primary-action" type="button" id="work-picker-confirm" disabled><i data-lucide="check" aria-hidden="true"></i>确定选择</button></div>
     </section>`;
   document.body.appendChild(backdrop);
   refreshIcons();
-  const close = () => backdrop.remove();
+  const close = ({ restoreFocus = true } = {}) => {
+    backdrop.remove();
+    syncOverlayState();
+    if (restoreFocus && returnFocus?.isConnected) window.requestAnimationFrame(() => returnFocus.focus());
+  };
   backdrop.querySelector('#work-picker-close').addEventListener('click', close);
   backdrop.addEventListener('click', (event) => { if (event.target === backdrop) close(); });
 
   const grid = backdrop.querySelector('.work-picker-grid');
 
   const cardMarkup = (work, index, isSelected) =>
-    '<button class="work-picker-card' + (isSelected ? ' is-selected' : '') + '" type="button" style="--i:' + Math.floor(index / 4) + '" data-work-picker-url="' + escapeHtml(work.url) + '" data-work-picker-title="' + escapeHtml(work.title) + '" data-work-picker-meta="' + escapeHtml(work.meta || '') + '"><img src="' + escapeHtml(work.url) + '" alt="' + escapeHtml(work.title) + '" loading="lazy"><span class="pick-check"><i data-lucide="check" aria-hidden="true"></i></span><span>' + escapeHtml(shortText(work.title, 18)) + '</span></button>';
+    '<article class="work-picker-card' + (isSelected ? ' is-selected' : '') + '" style="--i:' + Math.floor(index / 4) + '" data-work-picker-url="' + escapeHtml(work.url) + '" data-work-picker-title="' + escapeHtml(work.title) + '" data-work-picker-meta="' + escapeHtml(work.meta || '') + '"><button class="work-picker-select" type="button" data-work-picker-action="select" aria-pressed="' + (isSelected ? 'true' : 'false') + '" aria-label="选择 ' + escapeHtml(work.title) + '"><span class="work-picker-media"><img src="' + escapeHtml(work.url) + '" alt="' + escapeHtml(work.title) + '" loading="lazy"><span class="pick-check"><i data-lucide="check" aria-hidden="true"></i></span></span></button><div class="work-picker-footer"><button class="work-picker-name" type="button" data-work-picker-action="select" aria-pressed="' + (isSelected ? 'true' : 'false') + '" title="' + escapeHtml(work.title) + '"><span class="work-picker-title">' + escapeHtml(shortText(work.title, 18)) + '</span></button><button class="work-picker-preview" type="button" data-work-picker-action="preview" aria-label="预览 ' + escapeHtml(work.title) + '" data-tooltip="预览"><i data-lucide="scan-eye" aria-hidden="true"></i></button></div></article>';
 
   const applyCoords = () => {
     const gridRect = grid.getBoundingClientRect();
@@ -468,9 +585,8 @@ function openWorkPicker({ onPick, multi = false, max = 1, selected = [] }) {
   };
 
   const buildCards = () => {
-    const current = Array.from(grid.querySelectorAll('.work-picker-card.is-selected')).map((card) => card.dataset.workPickerUrl);
     grid.className = 'work-picker-grid';
-    grid.innerHTML = images.map((work, index) => cardMarkup(work, index, selectedSet.has(work.url) || current.includes(work.url))).join('');
+    grid.innerHTML = images.map((work, index) => cardMarkup(work, index, draftSelection.has(work.url))).join('');
     refreshIcons();
     bindCardEvents();
     playAnimation();
@@ -478,25 +594,30 @@ function openWorkPicker({ onPick, multi = false, max = 1, selected = [] }) {
   };
 
   const updateActions = () => {
-    if (!multi) return;
-    const count = grid.querySelectorAll('.work-picker-card.is-selected').length;
+    const count = draftSelection.size;
     const label = backdrop.querySelector('#work-picker-count');
     if (label) label.textContent = String(count);
     const confirm = backdrop.querySelector('#work-picker-confirm');
     if (confirm) confirm.disabled = count === 0;
+    grid.querySelectorAll('.work-picker-card').forEach((card) => {
+      const selectedCard = draftSelection.has(card.dataset.workPickerUrl);
+      card.classList.toggle('is-selected', selectedCard);
+      card.querySelectorAll('[data-work-picker-action="select"]').forEach((button) => button.setAttribute('aria-pressed', selectedCard ? 'true' : 'false'));
+    });
   };
 
-  const fastPick = (card) => {
-    if (card.classList.contains('is-selected')) {
-      card.classList.remove('is-selected');
+  const toggleSelection = (url) => {
+    if (draftSelection.has(url)) {
+      draftSelection.delete(url);
       updateActions();
       return true;
     }
-    if (multi && grid.querySelectorAll('.work-picker-card.is-selected').length >= max) {
-      showToast('最多选择 ' + max + ' 张。', 'error');
+    if (limit === 1) draftSelection.clear();
+    else if (draftSelection.size >= limit) {
+      showToast('最多选择 ' + limit + ' 张。', 'error');
       return false;
     }
-    card.classList.add('is-selected');
+    draftSelection.add(url);
     updateActions();
     return true;
   };
@@ -504,45 +625,24 @@ function openWorkPicker({ onPick, multi = false, max = 1, selected = [] }) {
   const openPreviewFor = (card) => {
     const index = images.findIndex((work) => work.url === card.dataset.workPickerUrl);
     if (index < 0) return;
-    const items = images.map((work) => ({ url: safeMediaUrl(work.url), title: work.title, meta: work.meta || '', kind: 'image' }));
-    const cardFor = (url) => grid.querySelector(`.work-picker-card[data-work-picker-url="${url.replace(/"/g, '&quot;')}"]`);
-    const isItemSelected = (item) => {
-      const el = cardFor(item.url);
-      return el ? el.classList.contains('is-selected') : false;
-    };
-    if (multi) {
-      openMediaPreview({
-        items,
-        index,
-        isItemSelected,
-        disabledWhenChoosing: () => grid.querySelectorAll('.work-picker-card.is-selected').length >= max,
-        chooseDisabledLabel: `已达上限（最多 ${max} 张）`,
-        onChoose: (item) => {
-          const el = cardFor(item.url);
-          if (!el) return;
-          fastPick(el);
-          updateActions();
-        }
-      });
-    } else {
-      openMediaPreview({
-        items,
-        index,
-        onChoose: (item) => { close(); onPick({ url: item.url, title: item.title }); }
-      });
-    }
+    const items = images.map(previewItemFromWork);
+    openMediaPreview({
+      items,
+      index,
+      isItemSelected: (item) => draftSelection.has(item.url),
+      disabledWhenChoosing: (item) => limit > 1 && draftSelection.size >= limit && !draftSelection.has(item.url),
+      chooseDisabledLabel: `已达上限（最多 ${limit} 张）`,
+      onChoose: (item) => toggleSelection(item.url),
+      returnFocus: card.querySelector('[data-work-picker-action="preview"]')
+    });
   };
 
   const bindCardEvents = () => {
-    grid.querySelectorAll('[data-work-picker-url]').forEach((card) => {
-      card.addEventListener('click', () => {
-        clearTimeout(card._pickerClickTimer);
-        card._pickerClickTimer = setTimeout(() => openPreviewFor(card), 200);
-      });
-      card.addEventListener('dblclick', () => {
-        clearTimeout(card._pickerClickTimer);
-        if (!multi) { close(); onPick({ url: card.dataset.workPickerUrl, title: card.dataset.workPickerTitle || '作品图片' }); return; }
-        fastPick(card);
+    grid.querySelectorAll('.work-picker-card').forEach((card) => {
+      card.addEventListener('click', (event) => {
+        const action = event.target.closest('[data-work-picker-action]')?.dataset.workPickerAction;
+        if (action === 'preview') { openPreviewFor(card); return; }
+        if (action === 'select' || !action) toggleSelection(card.dataset.workPickerUrl);
       });
       if (anim === 'bounce') {
         card.addEventListener('mousemove', (event) => {
@@ -564,19 +664,140 @@ function openWorkPicker({ onPick, multi = false, max = 1, selected = [] }) {
     buildCards();
   }));
 
-  if (multi) {
-    backdrop.querySelector('#work-picker-confirm').addEventListener('click', () => {
-      const items = Array.from(grid.querySelectorAll('.work-picker-card.is-selected')).map((card) => ({ url: card.dataset.workPickerUrl, title: card.dataset.workPickerTitle || '作品图片' }));
-      close();
-      onPick(items);
-    });
-  }
+  backdrop.querySelector('#work-picker-confirm').addEventListener('click', () => {
+    const items = images.filter((work) => draftSelection.has(work.url)).map((work) => ({
+      url: work.url,
+      title: work.title,
+      meta: work.meta || '',
+      prompt: work.prompt || '',
+      generation: work.generation || null,
+      createdAt: work.createdAt || null
+    }));
+    close({ restoreFocus: false });
+    onConfirm?.(items);
+  });
 
+  syncOverlayState();
   buildCards();
+  window.requestAnimationFrame(() => backdrop.querySelector('#work-picker-close')?.focus());
   return close;
 }
 
-function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLabel = '选择这张图', chooseSelectedLabel = '已选，点击取消', chooseDisabledLabel = '', disabledWhenChoosing, showCancel = true }) {
+function generationDetailRows(item) {
+  const generation = item?.generation || {};
+  const rows = [];
+  const add = (label, value, copyable = false) => {
+    if (value === undefined || value === null || value === '') return;
+    rows.push({ label, value: String(value), copyable });
+  };
+  add('模型', generation.model);
+  add('生成模式', generation.modeLabel || (item.kind === 'video' ? VIDEO_MODE_LABELS[generation.mode] : IMAGE_MODE_LABELS[generation.mode]));
+  if (item.kind === 'video') {
+    add('画面尺寸', generation.width && generation.height ? `${generation.width} × ${generation.height}` : generation.size);
+    add('画面比例', generation.ratio);
+    add('时长', generation.duration ? `${generation.duration} 秒` : generation.seconds ? `${generation.seconds} 秒` : '');
+    add('总帧数', generation.frames);
+    add('帧率', generation.frameRate ? `${generation.frameRate} fps` : '');
+  } else {
+    add('尺寸档位', generation.size);
+    add('画面比例', generation.ratio);
+  }
+  add('风格', generation.styleLabel);
+  add(item.kind === 'video' ? '参考帧' : '参考图', Number.isFinite(Number(generation.referenceCount)) ? `${generation.referenceCount} 张` : '');
+  if (item.kind === 'image') add('响应格式', generation.responseFormat);
+  if (item.kind === 'video') {
+    add('负向提示词', generation.negativePrompt, true);
+    add('种子', generation.seed);
+  }
+  add('生成时间', formatFullDate(item.createdAt || generation.createdAt));
+  return rows;
+}
+
+function previewItemFromWork(work) {
+  return {
+    url: safeMediaUrl(work.url),
+    title: work.title,
+    meta: work.meta || '',
+    kind: work.kind,
+    prompt: work.prompt || '',
+    generation: work.generation || null,
+    createdAt: work.createdAt || null,
+    allowUrlCopy: Boolean(work.url)
+  };
+}
+
+function previewSummaryFacts(item) {
+  const generation = item?.generation || {};
+  const facts = [];
+  const add = (value) => { if (value && !facts.includes(String(value))) facts.push(String(value)); };
+  add(item.meta);
+  add(generation.modeLabel || (item.kind === 'video' ? VIDEO_MODE_LABELS[generation.mode] : IMAGE_MODE_LABELS[generation.mode]));
+  if (generation.styleLabel && generation.styleLabel !== '自由发挥') add(generation.styleLabel);
+  if (Number(generation.referenceCount) > 0) add(`${generation.referenceCount} 张${item.kind === 'video' ? '参考帧' : '参考图'}`);
+  return facts;
+}
+
+function previewDisplayTitle(item) {
+  const title = String(item?.title || '').trim();
+  if (title && !['Agnes 生成图像', 'Agnes 生成视频'].includes(title)) return title;
+  return shortText(item?.prompt, 44) || title || (item?.kind === 'video' ? '视频作品' : '图像作品');
+}
+
+function previewPromptSummary(item) {
+  const prompt = String(item?.prompt || '').replace(/\s+/g, ' ').trim();
+  const title = previewDisplayTitle(item).replace(/\.\.\.$/, '').trim();
+  if (!prompt) return '';
+  if (title && prompt.startsWith(title)) return middleShortText(prompt.slice(title.length).replace(/^[\s,，。:：;；·-]+/, ''), 112);
+  return middleShortText(prompt, 112);
+}
+
+function showMediaDetailsModal(item, returnFocus = document.activeElement) {
+  const existing = $('#media-details-modal');
+  if (existing) existing.remove();
+  const rows = generationDetailRows(item);
+  const url = safeMediaUrl(item.url || item.src);
+  const copyableUrl = /^https?:/i.test(url) ? url : '';
+  const sections = [];
+  if (item.prompt) {
+    sections.push(`<section class="media-detail-section"><div class="media-detail-heading"><h3>提示词</h3><button class="text-button" type="button" data-media-detail-copy="prompt"><i data-lucide="copy" aria-hidden="true"></i>复制提示词</button></div><pre class="media-detail-prompt">${escapeHtml(item.prompt)}</pre></section>`);
+  }
+  if (rows.length) {
+    sections.push(`<section class="media-detail-section"><h3>生成参数</h3><dl class="media-detail-grid">${rows.map((row, index) => `<div class="media-detail-row"><dt>${escapeHtml(row.label)}</dt><dd>${escapeHtml(row.value)}</dd>${row.copyable ? `<button class="icon-button small" type="button" data-media-detail-copy="row" data-media-detail-row="${index}" aria-label="复制${escapeHtml(row.label)}" data-tooltip="复制${escapeHtml(row.label)}"><i data-lucide="copy" aria-hidden="true"></i></button>` : ''}</div>`).join('')}</dl></section>`);
+  }
+  if (copyableUrl) {
+    sections.push(`<section class="media-detail-section media-detail-url"><div class="media-detail-heading"><h3>媒体地址</h3>${copyableUrl && item.allowUrlCopy !== false ? '<button class="text-button" type="button" data-media-detail-copy="url"><i data-lucide="copy" aria-hidden="true"></i>复制地址</button>' : ''}</div><p title="${escapeHtml(url)}">${escapeHtml(shortText(url, 120))}</p></section>`);
+  }
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop media-details-backdrop';
+  backdrop.id = 'media-details-modal';
+  backdrop.innerHTML = `<section class="modal-panel media-details-panel" role="dialog" aria-modal="true" aria-labelledby="media-details-title"><div class="modal-topline"><span class="section-kicker"><span class="signal-line"></span> 生成详情</span><button class="icon-button small" type="button" data-media-detail-action="close" aria-label="关闭生成详情" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button></div><h2 id="media-details-title">${escapeHtml(previewDisplayTitle(item))}</h2><div class="media-details-content">${sections.join('') || '<p class="modal-copy">这个媒体没有可展示的附加信息。</p>'}</div></section>`;
+  document.body.appendChild(backdrop);
+  refreshIcons();
+  syncOverlayState();
+  const panel = backdrop.querySelector('.media-details-panel');
+  const close = () => {
+    document.removeEventListener('keydown', onKeys, true);
+    backdrop.remove();
+    syncOverlayState();
+    if (returnFocus?.isConnected) window.requestAnimationFrame(() => returnFocus.focus());
+  };
+  const onKeys = (event) => {
+    if (event.key === 'Escape') { event.stopPropagation(); close(); return; }
+    trapFocus(event, panel);
+  };
+  backdrop.addEventListener('click', (event) => {
+    if (event.target === backdrop || event.target.closest('[data-media-detail-action="close"]')) { close(); return; }
+    const copyAction = event.target.closest('[data-media-detail-copy]');
+    if (!copyAction) return;
+    if (copyAction.dataset.mediaDetailCopy === 'prompt') copyText(item.prompt);
+    else if (copyAction.dataset.mediaDetailCopy === 'url') copyText(copyableUrl);
+    else if (copyAction.dataset.mediaDetailCopy === 'row') copyText(rows[Number(copyAction.dataset.mediaDetailRow)]?.value || '');
+  });
+  document.addEventListener('keydown', onKeys, true);
+  window.requestAnimationFrame(() => backdrop.querySelector('[data-media-detail-action="close"]')?.focus());
+}
+
+function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLabel = '选择这张图', chooseSelectedLabel = '已选，点击取消', chooseDisabledLabel = '', disabledWhenChoosing, returnFocus = document.activeElement }) {
   const existing = $('#media-preview');
   if (existing) existing.remove();
   const list = Array.from(items || []).filter((item) => item && (item.url || item.src));
@@ -587,54 +808,116 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
   overlay.className = 'preview-backdrop';
   overlay.id = 'media-preview';
   overlay.innerHTML = `
-    <div class="preview-stage">
-      <div class="preview-head">
-        <button class="icon-button small preview-close" type="button" data-preview-action="close" aria-label="关闭预览" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
-      </div>
+    <div class="preview-stage${navVisible ? ' has-navigation' : ''}" role="dialog" aria-modal="true" aria-label="媒体预览">
       <div class="preview-media-frame">
-        <div class="preview-media-slot"></div>
-        ${navVisible ? '<button class="preview-nav preview-nav-prev" type="button" data-preview-action="prev" aria-label="上一张" data-tooltip="上一张"><i data-lucide="chevron-left" aria-hidden="true"></i></button><button class="preview-nav preview-nav-next" type="button" data-preview-action="next" aria-label="下一张" data-tooltip="下一张"><i data-lucide="chevron-right" aria-hidden="true"></i></button>' : ''}
-      </div>
-      <div class="preview-bar">
-        <div class="preview-bar-left">
-          <span class="preview-kind-badge"><i data-lucide="image" aria-hidden="true"></i><span data-preview-kind>图像</span></span>
-          ${navVisible ? '<span class="preview-counter mono" data-preview-counter>1 / ' + list.length + '</span>' : ''}
-          <div class="preview-meta"><strong data-preview-title></strong><span data-preview-meta></span></div>
-        </div>
-        <div class="preview-bar-actions">
-          ${onChoose ? '<button class="primary-action" type="button" data-preview-action="choose"><i data-lucide="check" aria-hidden="true"></i><span data-preview-choose-label></span></button>' : ''}
-          ${showCancel ? '<button class="text-button" type="button" data-preview-action="close">取消</button>' : ''}
+        <div class="preview-media-slot" data-preview-media-slot>
+          <div class="preview-media-box is-loading" data-preview-media-box><div class="preview-media-element" data-preview-media-element></div><button class="icon-button small preview-close" type="button" data-preview-action="close" aria-label="关闭预览" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button></div>
         </div>
       </div>
+      ${navVisible ? '<div class="preview-nav-row"><button class="preview-nav preview-nav-prev" type="button" data-preview-action="prev" aria-label="上一张" data-tooltip="上一张"><i data-lucide="chevron-left" aria-hidden="true"></i></button><span class="preview-counter mono" data-preview-counter aria-live="polite">1 / ' + list.length + '</span><button class="preview-nav preview-nav-next" type="button" data-preview-action="next" aria-label="下一张" data-tooltip="下一张"><i data-lucide="chevron-right" aria-hidden="true"></i></button></div>' : ''}
+      <section class="preview-info-panel" aria-label="媒体信息">
+        <div class="preview-info-toolbar">
+          <div class="preview-info-facts"><span class="preview-kind-badge"><i data-lucide="image" aria-hidden="true"></i><span data-preview-kind>图像</span></span><div class="preview-facts" data-preview-facts></div></div>
+          <div class="preview-info-actions">
+            <button class="text-button" type="button" data-preview-action="copy-prompt" hidden><i data-lucide="copy" aria-hidden="true"></i>复制提示词</button>
+            <button class="text-button" type="button" data-preview-action="details" hidden><i data-lucide="list-collapse" aria-hidden="true"></i><span data-preview-details-label>查看参数</span></button>
+            ${onChoose ? '<button class="primary-action" type="button" data-preview-action="choose"><i data-lucide="check" aria-hidden="true"></i><span data-preview-choose-label></span></button>' : ''}
+          </div>
+        </div>
+        <div class="preview-info-summary">
+          <strong data-preview-title></strong>
+          <button class="preview-prompt-summary" type="button" data-preview-action="details" hidden><span aria-hidden="true">·</span><span data-preview-prompt></span><i data-lucide="expand" aria-hidden="true"></i></button>
+        </div>
+      </section>
     </div>`;
   document.body.appendChild(overlay);
   refreshIcons();
+  syncOverlayState();
 
-  const mediaSlot = overlay.querySelector('.preview-media-slot');
+  const stage = overlay.querySelector('.preview-stage');
+  const mediaSlot = overlay.querySelector('[data-preview-media-slot]');
+  const mediaBox = overlay.querySelector('[data-preview-media-box]');
+  const mediaElement = overlay.querySelector('[data-preview-media-element]');
+  let naturalSize = null;
+  let resizeFrame = 0;
+  let renderVersion = 0;
 
-  const renderMedia = () => {
-    const item = list[current];
-    const src = item.url || item.src;
-    mediaSlot.innerHTML = item.kind === 'video'
-      ? `<video controls autoplay muted playsinline preload="metadata" src="${escapeHtml(src)}"></video>`
-      : `<img src="${escapeHtml(src)}" alt="${escapeHtml(item.title || '')}">`;
-    const video = mediaSlot.querySelector('video');
-    if (video) {
-      try {
-        const playback = video.play();
-        if (playback?.catch) playback.catch(() => {});
-      } catch (error) {
-        // 浏览器阻止自动播放时保留控件，让用户手动开始。
-      }
-    }
+  const updateMediaBox = () => {
+    window.cancelAnimationFrame(resizeFrame);
+    resizeFrame = window.requestAnimationFrame(() => {
+      if (!naturalSize || !mediaSlot.isConnected) return;
+      const rect = mediaSlot.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const scale = Math.min(rect.width / naturalSize.width, rect.height / naturalSize.height, 1);
+      mediaBox.style.width = `${Math.max(1, Math.round(naturalSize.width * scale))}px`;
+      mediaBox.style.height = `${Math.max(1, Math.round(naturalSize.height * scale))}px`;
+      mediaBox.classList.remove('is-loading');
+    });
+  };
+
+  const renderDetails = (item) => {
+    const kind = item.kind === 'video' ? '视频' : '图像';
     const badgeIcon = overlay.querySelector('.preview-kind-badge [data-lucide]');
     if (badgeIcon) badgeIcon.setAttribute('data-lucide', item.kind === 'video' ? 'clapperboard' : 'image');
-    overlay.querySelector('.preview-kind-badge span[data-preview-kind]').textContent = item.kind === 'video' ? '视频' : '图像';
+    overlay.querySelector('[data-preview-kind]').textContent = kind;
     const title = overlay.querySelector('[data-preview-title]');
-    title.textContent = shortText(item.title || '作品', 34);
+    title.textContent = previewDisplayTitle(item);
     title.title = item.title || '';
-    const meta = overlay.querySelector('[data-preview-meta]');
-    meta.textContent = item.meta ? ' · ' + shortText(item.meta, 80) : '';
+    const facts = [...previewSummaryFacts(item), ...(item.details || []).map((detail) => detail?.value || detail)].filter(Boolean);
+    overlay.querySelector('[data-preview-facts]').innerHTML = facts.map((fact) => `<span>${escapeHtml(fact)}</span>`).join('');
+    const promptButton = overlay.querySelector('.preview-prompt-summary');
+    const promptText = overlay.querySelector('[data-preview-prompt]');
+    const promptSummary = previewPromptSummary(item);
+    promptButton.hidden = !promptSummary;
+    promptText.textContent = promptSummary;
+    promptText.title = item.prompt || '';
+    overlay.querySelector('[data-preview-action="copy-prompt"]').hidden = !item.prompt;
+    const detailRows = generationDetailRows(item);
+    const hasDetails = Boolean(item.prompt || detailRows.length || item.details?.length);
+    const detailsLabel = overlay.querySelector('[data-preview-details-label]');
+    if (detailsLabel) detailsLabel.textContent = detailRows.length ? '查看参数' : '查看信息';
+    overlay.querySelectorAll('[data-preview-action="details"]').forEach((button) => {
+      if (!button.classList.contains('preview-prompt-summary')) button.hidden = !hasDetails;
+    });
+  };
+
+  const renderMedia = () => {
+    renderVersion += 1;
+    const version = renderVersion;
+    const item = list[current];
+    const src = item.url || item.src;
+    naturalSize = null;
+    mediaBox.classList.add('is-loading');
+    mediaBox.style.removeProperty('width');
+    mediaBox.style.removeProperty('height');
+    mediaElement.innerHTML = item.kind === 'video' ? `<video controls autoplay muted playsinline preload="metadata" src="${escapeHtml(src)}"></video>` : `<img src="${escapeHtml(src)}" alt="${escapeHtml(item.title || '')}">`;
+    const media = mediaElement.querySelector('img, video');
+    let readyHandled = false;
+    const onReady = () => {
+      if (readyHandled || version !== renderVersion || !media.isConnected) return;
+      readyHandled = true;
+      const width = media instanceof HTMLVideoElement ? media.videoWidth : media.naturalWidth;
+      const height = media instanceof HTMLVideoElement ? media.videoHeight : media.naturalHeight;
+      naturalSize = width && height ? { width, height } : { width: 16, height: 9 };
+      item.mediaWidth = width || null;
+      item.mediaHeight = height || null;
+      if (media instanceof HTMLVideoElement && Number.isFinite(media.duration)) item.mediaDuration = media.duration;
+      const measured = [width && height ? `${width} × ${height}px` : '', item.mediaDuration ? formatMediaDuration(item.mediaDuration) : ''].filter(Boolean);
+      item.details = [...(item.details || []).filter((detail) => !detail?.runtime), ...measured.map((value) => ({ value, runtime: true }))];
+      renderDetails(item);
+      updateMediaBox();
+    };
+    media.addEventListener(item.kind === 'video' ? 'loadedmetadata' : 'load', onReady, { once: true });
+    if ((media instanceof HTMLImageElement && media.complete) || (media instanceof HTMLVideoElement && media.readyState >= 1)) onReady();
+    if (media instanceof HTMLVideoElement) {
+      try {
+        const playback = media.play();
+        if (playback?.catch) playback.catch(() => {});
+      } catch (error) {
+        // 浏览器阻止自动播放时保留原生控件。
+      }
+    }
+    renderDetails(item);
     refreshIcons();
   };
 
@@ -663,32 +946,67 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
     renderMedia();
     updateNav();
     updateChoose();
-    overlay.querySelector('.preview-media-slot').firstElementChild.style.animation = 'none';
-    window.requestAnimationFrame(() => { const el = mediaSlot.firstElementChild; if (el) el.style.animation = ''; });
   };
 
+  let swipeStart = null;
+  const handleSwipeStart = (event) => {
+    if (!navVisible || !['touch', 'pen'].includes(event.pointerType) || event.isPrimary === false) return;
+    if (event.target.closest('[data-preview-action]')) return;
+    const video = event.target.closest('video');
+    if (video) {
+      const rect = video.getBoundingClientRect();
+      if (event.clientY >= rect.bottom - 56) return;
+    }
+    swipeStart = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  };
+  const handleSwipeEnd = (event) => {
+    if (!swipeStart || event.pointerId !== swipeStart.pointerId) return;
+    const { x, y } = swipeStart;
+    swipeStart = null;
+    const dx = event.clientX - x;
+    const dy = event.clientY - y;
+    if (Math.abs(dx) < 48 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+    go(dx < 0 ? 1 : -1);
+  };
+  const handleSwipeCancel = () => { swipeStart = null; };
+  mediaSlot.addEventListener('pointerdown', handleSwipeStart);
+  mediaSlot.addEventListener('pointerup', handleSwipeEnd);
+  mediaSlot.addEventListener('pointercancel', handleSwipeCancel);
+  const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(updateMediaBox) : null;
+  resizeObserver?.observe(mediaSlot);
+  window.addEventListener('resize', updateMediaBox);
+
   const close = () => {
+    renderVersion += 1;
     document.removeEventListener('keydown', onKeys);
+    resizeObserver?.disconnect();
+    window.removeEventListener('resize', updateMediaBox);
+    window.cancelAnimationFrame(resizeFrame);
     overlay.remove();
+    syncOverlayState();
+    if (returnFocus?.isConnected) window.requestAnimationFrame(() => returnFocus.focus());
   };
 
   const onKeys = (event) => {
+    if ($('#media-details-modal')) return;
     if (event.key === 'Escape') { close(); return; }
+    trapFocus(event, stage);
     if (!navVisible) return;
     if (event.key === 'ArrowLeft') go(-1);
     if (event.key === 'ArrowRight') go(1);
   };
 
   overlay.addEventListener('click', (event) => {
-    const media = event.target.closest('.preview-media-slot img, .preview-media-slot video');
     const action = event.target.closest('[data-preview-action]')?.dataset.previewAction;
-    if (event.target === overlay || (!media && !action && !event.target.closest('.preview-bar'))) { close(); return; }
+    if (event.target === overlay) { close(); return; }
     if (!action) return;
+    const item = list[current];
     if (action === 'close') close();
     else if (action === 'prev') go(-1);
     else if (action === 'next') go(1);
+    else if (action === 'copy-prompt') copyText(item.prompt);
+    else if (action === 'details') showMediaDetailsModal(item, event.target.closest('[data-preview-action]'));
     else if (action === 'choose') {
-      const item = list[current];
       if (isItemSelected && isItemSelected(item, current)) {
         onChoose(item, current);
         updateChoose();
@@ -706,43 +1024,60 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
   updateNav();
   updateChoose();
   document.addEventListener('keydown', onKeys);
+  window.requestAnimationFrame(() => overlay.querySelector('.preview-close')?.focus());
 }
 
-function updateKeyStatus(connected = false) {
+function updateKeyStatus(connected = false, authError = false) {
+  if (connected) connectionStatus = 'connected';
+  else if (authError) connectionStatus = 'error';
+  else if (!apiKey) connectionStatus = 'idle';
   const text = $('#api-status-text');
+  const endpoint = $('#api-status-endpoint');
   const dot = $('#api-status-dot');
   const status = $('#api-status');
-  const sidebarState = $('#sidebar-key-state');
-  if (apiKey && connected) {
-    text.textContent = '已连接';
-    sidebarState.textContent = '已验证';
-    status.classList.add('is-connected');
-    dot.classList.add('is-live');
-    return;
-  }
-  if (apiKey) {
-    text.textContent = '密钥已保存';
-    sidebarState.textContent = '已保存';
-    status.classList.remove('is-connected');
-    dot.classList.remove('is-live');
-    return;
-  }
-  text.textContent = '未配置密钥';
-  sidebarState.textContent = '未配置';
-  status.classList.remove('is-connected');
-  dot.classList.remove('is-live');
+  if (!text || !dot || !status) return;
+  const stateLabel = !apiKey ? '未配置' : connectionStatus === 'connected' ? '已连接' : connectionStatus === 'error' ? '认证失败' : '待验证';
+  if (endpoint) endpoint.textContent = activeConnectionLabel();
+  text.textContent = stateLabel;
+  status.classList.toggle('is-connected', Boolean(apiKey && connectionStatus === 'connected'));
+  status.classList.toggle('is-error', Boolean(apiKey && connectionStatus === 'error'));
+  dot.classList.toggle('is-live', Boolean(apiKey && connectionStatus === 'connected'));
+  status.setAttribute('aria-label', `打开连接设置，当前为${activeConnectionLabel()}，${stateLabel}`);
+}
+
+function syncConnectionModal() {
+  const endpoint = connectionDraft.endpoint;
+  $('#connection-endpoints')?.querySelectorAll('[data-connection-endpoint]').forEach((button) => {
+    const active = button.dataset.connectionEndpoint === endpoint;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const field = $('#custom-base-url-field');
+  if (field) field.hidden = endpoint !== 'custom';
+  const input = $('#custom-base-url-input');
+  if (input) input.value = connectionDraft.customBaseUrl || '';
+}
+
+function selectConnectionEndpoint(endpoint) {
+  if (!['international', 'china', 'custom'].includes(endpoint)) return;
+  connectionDraft.endpoint = endpoint;
+  syncConnectionModal();
 }
 
 function openKeyModal() {
   const modal = $('#key-modal');
   const input = $('#api-key-input');
   modal.hidden = false;
+  syncOverlayState();
   input.value = apiKey;
+  connectionDraft = { endpoint: state.connection.endpoint, customBaseUrl: state.connection.customBaseUrl || '' };
+  syncConnectionModal();
   window.setTimeout(() => input.focus(), 30);
 }
 
 function closeKeyModal() {
   $('#key-modal').hidden = true;
+  syncOverlayState();
 }
 
 function requireApiKey() {
@@ -775,16 +1110,19 @@ async function fetchAgnes(path, init = {}, timeoutMs = 120000) {
   const timeoutController = new AbortController();
   const timer = window.setTimeout(() => timeoutController.abort(), timeoutMs);
   const signal = combineSignals(init.signal, timeoutController.signal);
+  const baseUrl = activeBaseUrl();
   try {
-    const response = await fetch(`${CONFIG.baseUrl}${path}`, { ...init, signal, headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...(init.headers || {}) } });
+    const response = await fetch(`${baseUrl}${path}`, { ...init, signal, headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...(init.headers || {}) } });
     if (!response.ok) {
       const raw = await response.text();
       let payload = null;
       try { payload = raw ? JSON.parse(raw) : null; } catch (error) { payload = raw; }
       throw new AgnesApiError(getApiErrorMessage(response.status, payload), response.status, payload, parseRetryAfter(response.headers.get('Retry-After')));
     }
+    if (baseUrl === activeBaseUrl()) updateKeyStatus(true);
     return response;
   } catch (error) {
+    if (error instanceof AgnesApiError && [401, 403].includes(error.status)) updateKeyStatus(false, true);
     if (error instanceof AgnesApiError) throw error;
     if (error.name === 'AbortError') throw error;
     throw new AgnesApiError('网络请求失败，请检查网络、CORS 或 Agnes 网关状态。', 0, error);
@@ -942,8 +1280,9 @@ function init() {
 
 function bindEvents() {
   $$('.nav-item').forEach((button) => button.addEventListener('click', () => setMode(button.dataset.mode)));
-  $('#open-key-settings').addEventListener('click', openKeyModal);
-  $('#sidebar-key-settings').addEventListener('click', openKeyModal);
+  $('#api-status').addEventListener('click', openKeyModal);
+  $$('[data-connection-endpoint]').forEach((button) => button.addEventListener('click', () => selectConnectionEndpoint(button.dataset.connectionEndpoint)));
+  $('#custom-base-url-input').addEventListener('input', (event) => { connectionDraft.customBaseUrl = event.target.value; });
   $('#close-key-settings').addEventListener('click', closeKeyModal);
   $('#key-modal').addEventListener('click', (event) => { if (event.target === $('#key-modal')) closeKeyModal(); });
   $('#save-api-key').addEventListener('click', saveApiKey);
@@ -971,10 +1310,11 @@ function bindEvents() {
     }
   });
   $('#chat-vision-toggle').addEventListener('click', () => { $('#chat-vision-panel').hidden = !$('#chat-vision-panel').hidden; });
-  $$('[data-chat-image-source]').forEach((button) => button.addEventListener('click', () => setChatImageSource(button.dataset.chatImageSource)));
   $('#chat-image-file-input').addEventListener('change', handleChatImageFile);
   $('#chat-image-preview').addEventListener('click', handleChatImagePreviewAction);
-  $('#chat-clear-image').addEventListener('click', clearChatImageInput);
+  bindDragDrop($('#chat-image-drop-zone'), (files) => addChatImageFiles(files));
+  $('#chat-pick-work').addEventListener('click', openChatWorkPicker);
+  $('#chat-pick-link').addEventListener('click', openChatUrlModal);
   $('#chat-suggestions').addEventListener('click', (event) => {
     const button = event.target.closest('[data-prompt]');
     if (!button) return;
@@ -987,7 +1327,8 @@ function bindEvents() {
   $$('.segment-button[data-image-mode]').forEach((button) => button.addEventListener('click', () => setImageMode(button.dataset.imageMode)));
   $('#image-file-input').addEventListener('change', handleImageFiles);
   bindDragDrop($('#image-drop-zone'), (files) => addImageReferenceFiles(files));
-  $('#image-reference-grid').addEventListener('click', (event) => { if (event.target.closest('[data-reference-action="remove"]')) handleReferenceAction(event); else handleReferenceGridClick(event); });
+  $('#image-reference-grid').addEventListener('click', handleReferenceAction);
+  $('#image-reference-grid').addEventListener('keydown', handleMediaReferencePreviewKeydown);
   $('#image-reference-grid').addEventListener('pointerdown', startReferenceDrag);
   $('#image-prompt-structure').addEventListener('click', handleImageStructureAction);
   $('#image-result').addEventListener('click', handleImageResultAction);
@@ -1000,10 +1341,9 @@ function bindEvents() {
       .map((reference) => safeMediaUrl(reference.dataUrl || reference.url))
       .filter((url) => workUrls.has(url));
     openWorkPicker({
-      multi: true,
       max: room + selectedWorkUrls.length,
       selected: selectedWorkUrls,
-      onPick: (items) => {
+      onConfirm: (items) => {
         const selectedUrls = new Set(items.map((item) => safeMediaUrl(item.url)).filter(Boolean));
         imageReferences = imageReferences.filter((reference) => {
           const url = safeMediaUrl(reference.dataUrl || reference.url);
@@ -1039,20 +1379,32 @@ function bindEvents() {
   $$('[data-image-style]').forEach((button) => button.addEventListener('click', () => setImageStylePreset(button.dataset.imageStyle)));
   $('#image-keywords').addEventListener('input', (event) => { state.ui.image.keywordDirection = event.target.value; saveState(); });
   $('#image-random-prompt').addEventListener('click', () => {
-    if (promptAssistRequest) { handlePromptAssistCancel('random'); return; }
-    requestImagePrompt('random');
+    if (promptAssistStates.image.request) { handlePromptAssistCancel('image', 'random'); return; }
+    requestPromptAssist('image', 'random');
   });
   $('#image-optimize-prompt').addEventListener('click', () => {
-    if (promptAssistRequest) { handlePromptAssistCancel('optimize'); return; }
-    requestImagePrompt('optimize');
+    if (promptAssistStates.image.request) { handlePromptAssistCancel('image', 'optimize'); return; }
+    requestPromptAssist('image', 'optimize');
   });
 
   $$('.segment-button[data-video-mode]').forEach((button) => button.addEventListener('click', () => setVideoMode(button.dataset.videoMode)));
+  $$('[data-video-style]').forEach((button) => button.addEventListener('click', () => setVideoStylePreset(button.dataset.videoStyle)));
+  $('#video-keywords').addEventListener('input', (event) => { state.ui.video.keywordDirection = event.target.value; saveState(); });
+  $('#video-random-prompt').addEventListener('click', () => {
+    if (promptAssistStates.video.request) { handlePromptAssistCancel('video', 'random'); return; }
+    requestPromptAssist('video', 'random');
+  });
+  $('#video-optimize-prompt').addEventListener('click', () => {
+    if (promptAssistStates.video.request) { handlePromptAssistCancel('video', 'optimize'); return; }
+    requestPromptAssist('video', 'optimize');
+  });
   $('#video-generate').addEventListener('click', handleVideoGenerate);
   $('#video-stop').addEventListener('click', stopVideoPolling);
   $('#video-refresh').addEventListener('click', refreshVideoStatus);
   $('#video-image-inputs').addEventListener('click', (event) => handleVideoRefAction('image', event));
+  $('#video-image-inputs').addEventListener('keydown', handleMediaReferencePreviewKeydown);
   $('#video-keyframe-inputs').addEventListener('click', (event) => handleVideoRefAction('keyframes', event));
+  $('#video-keyframe-inputs').addEventListener('keydown', handleMediaReferencePreviewKeydown);
   $('#video-keyframe-inputs').addEventListener('pointerdown', startKeyframeDrag);
   $('#video-image-file-input').addEventListener('change', (event) => handleVideoRefFiles('image', event));
   $('#video-keyframe-file-input').addEventListener('change', (event) => handleVideoRefFiles('keyframes', event));
@@ -1074,6 +1426,21 @@ function bindEvents() {
   $('#image-fullscreen-toggle').addEventListener('click', () => toggleModeFullscreen('image'));
   $('#video-fullscreen-toggle').addEventListener('click', () => toggleModeFullscreen('video'));
   document.addEventListener('keydown', (event) => {
+    const inspector = $('#inspector-panel');
+    if (event.key === 'Tab' && inspector.classList.contains('is-mobile-open')) {
+      trapFocus(event, inspector);
+      return;
+    }
+    if (event.key === 'Escape' && inspector.classList.contains('is-mobile-open')) {
+      event.preventDefault();
+      closeMobileInspector({ restoreFocus: true });
+      return;
+    }
+    if (event.key === 'Tab') {
+      const overlays = Array.from(document.querySelectorAll('.modal-backdrop:not([hidden]), .preview-backdrop'));
+      trapFocus(event, overlays[overlays.length - 1]);
+      return;
+    }
     if (event.key !== 'Escape') return;
     if (document.querySelector('.modal-backdrop:not([hidden]), .preview-backdrop')) return;
     const activeMode = ['chat', 'image', 'video'].find((mode) => isModeFullscreen(mode));
@@ -1091,8 +1458,12 @@ function bindEvents() {
   $('#sidebar-collapse-toggle').addEventListener('click', toggleSidebarCollapse);
   $('#inspector-open-toggle').addEventListener('click', toggleInspectorCollapse);
   $('#inspector-collapse-toggle').addEventListener('click', toggleInspectorCollapse);
-  $('#mobile-inspector-toggle').addEventListener('click', () => $('#inspector-panel').classList.toggle('is-mobile-open'));
-  $('#mobile-inspector-close').addEventListener('click', () => $('#inspector-panel').classList.remove('is-mobile-open'));
+  $('#mobile-inspector-toggle').addEventListener('click', toggleMobileInspector);
+  $('#mobile-inspector-close').addEventListener('click', () => closeMobileInspector({ restoreFocus: true }));
+  $('#mobile-inspector-backdrop').addEventListener('click', () => closeMobileInspector({ restoreFocus: true }));
+  const inspectorMedia = window.matchMedia('(max-width: 1160px)');
+  if (inspectorMedia.addEventListener) inspectorMedia.addEventListener('change', syncMobileInspectorLayout);
+  else inspectorMedia.addListener?.(syncMobileInspectorLayout);
 }
 
 function syncUiControls() {
@@ -1107,7 +1478,9 @@ function syncUiControls() {
   $('#video-negative-prompt').value = state.ui.video.negativePrompt || '';
   $('#video-seed').value = state.ui.video.seed || '';
   $('#image-keywords').value = state.ui.image.keywordDirection || '';
+  $('#video-keywords').value = state.ui.video.keywordDirection || '';
   setImageStylePreset(state.ui.image.stylePreset, false);
+  setVideoStylePreset(state.ui.video.stylePreset, false);
   setChoiceButtons('[data-image-size]', state.ui.image.size);
   setChoiceButtons('[data-image-ratio]', state.ui.image.ratio);
   setChoiceButtons('[data-video-duration]', state.ui.video.duration);
@@ -1156,6 +1529,50 @@ function toggleInspectorCollapse() {
   applyLayoutState();
 }
 
+function isMobileInspectorLayout() {
+  return window.matchMedia('(max-width: 1160px)').matches;
+}
+
+function openMobileInspector() {
+  if (!isMobileInspectorLayout()) return;
+  const panel = $('#inspector-panel');
+  const backdrop = $('#mobile-inspector-backdrop');
+  const toggle = $('#mobile-inspector-toggle');
+  panel.classList.add('is-mobile-open');
+  panel.setAttribute('aria-hidden', 'false');
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  backdrop.hidden = false;
+  toggle.setAttribute('aria-expanded', 'true');
+  syncOverlayState();
+  window.requestAnimationFrame(() => $('#mobile-inspector-close')?.focus());
+}
+
+function closeMobileInspector({ restoreFocus = false } = {}) {
+  const panel = $('#inspector-panel');
+  const backdrop = $('#mobile-inspector-backdrop');
+  const toggle = $('#mobile-inspector-toggle');
+  const wasOpen = panel.classList.contains('is-mobile-open');
+  panel.classList.remove('is-mobile-open');
+  panel.setAttribute('aria-hidden', isMobileInspectorLayout() ? 'true' : 'false');
+  panel.removeAttribute('role');
+  panel.removeAttribute('aria-modal');
+  backdrop.hidden = true;
+  toggle.setAttribute('aria-expanded', 'false');
+  syncOverlayState();
+  if (restoreFocus && wasOpen) toggle.focus();
+}
+
+function toggleMobileInspector() {
+  if ($('#inspector-panel').classList.contains('is-mobile-open')) closeMobileInspector({ restoreFocus: true });
+  else openMobileInspector();
+}
+
+function syncMobileInspectorLayout() {
+  if (!isMobileInspectorLayout()) closeMobileInspector();
+  else if (!$('#inspector-panel').classList.contains('is-mobile-open')) $('#inspector-panel').setAttribute('aria-hidden', 'true');
+}
+
 const FULLSCREEN_MODES = { chat: 'chat-fullscreen', image: 'image-fullscreen', video: 'video-fullscreen' };
 
 function isModeFullscreen(mode) {
@@ -1168,6 +1585,7 @@ function isChatFullscreen() {
 
 function toggleModeFullscreen(mode) {
   const enter = !isModeFullscreen(mode);
+  if (enter) closeMobileInspector();
   const shell = $('.app-shell');
   Object.values(FULLSCREEN_MODES).forEach((name) => shell.classList.remove(name));
   if (enter) shell.classList.add(FULLSCREEN_MODES[mode]);
@@ -1207,7 +1625,7 @@ function setMode(mode) {
   $('#mode-breadcrumb').textContent = MODE_META[nextMode].label;
   $$('.inspector-content').forEach((panel) => panel.classList.toggle('is-hidden', panel.id !== MODE_META[nextMode].inspector));
   if (nextMode === 'works') renderWorks();
-  $('#inspector-panel').classList.remove('is-mobile-open');
+  closeMobileInspector();
   syncChatFocusMode();
   refreshIcons();
 }
@@ -1234,17 +1652,33 @@ function updateVideoEstimate() {
 
 function saveApiKey() {
   const value = $('#api-key-input').value.trim();
-  if (!value) { showToast('API 密钥不能为空。', 'error'); return; }
-  apiKey = value;
-  writeStoredKey(apiKey);
+  if (!value && apiKey) { showToast('如需移除现有密钥，请使用“清除本地密钥”。', 'error'); return; }
+  let customBaseUrl = connectionDraft.customBaseUrl || '';
+  if (connectionDraft.endpoint === 'custom') {
+    try {
+      customBaseUrl = normalizeCustomBaseUrl($('#custom-base-url-input').value);
+    } catch (error) {
+      showToast(error.message, 'error');
+      $('#custom-base-url-input').focus();
+      return;
+    }
+  }
+  state.connection = { endpoint: connectionDraft.endpoint, customBaseUrl };
+  if (value !== apiKey) {
+    apiKey = value;
+    writeStoredKey(apiKey);
+  }
+  connectionStatus = 'idle';
   updateKeyStatus(false);
   closeKeyModal();
-  showToast('API 密钥已保存在当前浏览器。');
+  saveState();
+  showToast('连接设置已保存。');
 }
 
 function clearApiKey() {
   apiKey = '';
   writeStoredKey('');
+  connectionStatus = 'idle';
   updateKeyStatus(false);
   $('#api-key-input').value = '';
   closeKeyModal();
@@ -1307,7 +1741,7 @@ function syncChatFocusMode() {
 function focusChatWorkspace() {
   state.ui.layout.sidebarCollapsed = true;
   state.ui.layout.inspectorCollapsed = true;
-  $('#inspector-panel').classList.remove('is-mobile-open');
+  closeMobileInspector();
   saveState();
   applyLayoutState();
 }
@@ -1317,13 +1751,6 @@ function contentImageUrl(content) {
   return content.find((part) => part?.type === 'image_url')?.image_url?.url || '';
 }
 
-function setChatImageSource(source) {
-  chatImageSource = ['upload', 'url'].includes(source) ? source : 'upload';
-  $$('[data-chat-image-source]').forEach((button) => button.classList.toggle('is-active', button.dataset.chatImageSource === chatImageSource));
-  $('#chat-image-upload-source').hidden = chatImageSource !== 'upload';
-  $('#chat-image-url-source').hidden = chatImageSource !== 'url';
-}
-
 function renderChatImagePreview() {
   const preview = $('#chat-image-preview');
   if (!chatImage) {
@@ -1331,19 +1758,19 @@ function renderChatImagePreview() {
     preview.innerHTML = '';
     return;
   }
+  const src = chatImage.dataUrl || chatImage.url;
+  const sourceLabel = chatImage.source === 'work' ? '作品集图片' : chatImage.source === 'link' ? 'HTTPS 图片链接' : '本地图片';
   preview.hidden = false;
-  preview.innerHTML = `<div class="chat-image-preview"><img src="${escapeHtml(chatImage.dataUrl)}" alt="${escapeHtml(chatImage.name)}"><div class="chat-image-preview-copy"><strong>${escapeHtml(chatImage.name)}</strong><small>本地图片已准备</small></div><button class="icon-button small" type="button" data-chat-image-action="remove" aria-label="移除本地图片" data-tooltip="移除本地图片"><i data-lucide="x" aria-hidden="true"></i></button></div>`;
+  preview.innerHTML = `<div class="chat-image-preview"><button class="chat-image-preview-media" type="button" data-chat-image-action="preview" aria-label="预览 ${escapeHtml(chatImage.name)}" data-tooltip="预览"><img src="${escapeHtml(src)}" alt="${escapeHtml(chatImage.name)}"></button><div class="chat-image-preview-copy"><strong title="${escapeHtml(chatImage.name)}">${escapeHtml(chatImage.name)}</strong><small>${sourceLabel}已准备</small></div><button class="media-ref-remove" type="button" data-chat-image-action="remove" aria-label="移除 ${escapeHtml(chatImage.name)}" data-tooltip="移除图片"><i data-lucide="trash-2" aria-hidden="true"></i></button></div>`;
   refreshIcons();
 }
 
-async function handleChatImageFile(event) {
-  const file = event.target.files?.[0];
-  event.target.value = '';
+async function addChatImageFiles(fileList) {
+  const file = Array.from(fileList || [])[0];
   if (!file) return;
   if (!file.type.startsWith('image/')) { showToast('请选择图片文件。', 'error'); return; }
   try {
-    chatImage = { name: file.name, dataUrl: await fileToDataUrl(file) };
-    setChatImageSource('upload');
+    chatImage = { name: file.name, dataUrl: await fileToDataUrl(file), source: 'upload' };
     renderChatImagePreview();
     showToast('本地图片已添加。');
   } catch (error) {
@@ -1351,27 +1778,64 @@ async function handleChatImageFile(event) {
   }
 }
 
+async function handleChatImageFile(event) {
+  const files = Array.from(event.target.files || []);
+  event.target.value = '';
+  await addChatImageFiles(files);
+}
+
 function handleChatImagePreviewAction(event) {
-  if (!event.target.closest('[data-chat-image-action="remove"]')) return;
-  chatImage = null;
-  renderChatImagePreview();
+  const action = event.target.closest('[data-chat-image-action]')?.dataset.chatImageAction;
+  if (!action || !chatImage) return;
+  if (action === 'preview') {
+    openMediaPreview({
+      items: [{ url: chatImage.dataUrl || chatImage.url, title: chatImage.name || '对话参考图', meta: chatImage.source === 'work' ? '作品集' : '', kind: 'image' }],
+      index: 0,
+      returnFocus: event.target.closest('[data-chat-image-action="preview"]')
+    });
+    return;
+  }
+  if (action === 'remove') {
+    chatImage = null;
+    renderChatImagePreview();
+  }
 }
 
 function clearChatImageInput() {
   chatImage = null;
-  $('#chat-image-url').value = '';
   $('#chat-image-file-input').value = '';
-  setChatImageSource('upload');
   renderChatImagePreview();
   $('#chat-vision-panel').hidden = true;
 }
 
 function resetChatImageInput() {
   chatImage = null;
-  $('#chat-image-url').value = '';
   $('#chat-image-file-input').value = '';
-  setChatImageSource('upload');
   renderChatImagePreview();
+}
+
+function openChatWorkPicker() {
+  const workUrls = new Set(state.works.filter((work) => work.kind === 'image').map((work) => safeMediaUrl(work.url)).filter(Boolean));
+  const currentUrl = safeMediaUrl(chatImage?.url || '');
+  openWorkPicker({
+    max: 1,
+    selected: currentUrl && workUrls.has(currentUrl) ? [currentUrl] : [],
+    onConfirm: (items) => {
+      const item = items[0];
+      if (!item) return;
+      chatImage = { name: item.title || '作品图片', url: item.url, source: 'work' };
+      renderChatImagePreview();
+    }
+  });
+}
+
+function openChatUrlModal() {
+  openReferenceUrlModal({
+    onConfirm: (url) => {
+      chatImage = { name: shortText(url, 30), url, source: 'link' };
+      renderChatImagePreview();
+    }
+  });
 }
 
 function isAcceptedImageSource(value) {
@@ -1476,8 +1940,8 @@ async function handleChatSubmit(event) {
   if (!requireApiKey()) return;
   const input = $('#chat-input');
   const text = input.value.trim();
-  const imageUrl = chatImageSource === 'upload' ? (chatImage?.dataUrl || '') : $('#chat-image-url').value.trim();
-  const imageName = chatImageSource === 'upload' ? (chatImage?.name || '') : '';
+  const imageUrl = chatImage?.dataUrl || chatImage?.url || '';
+  const imageName = chatImage?.name || '';
   if (!text) { showToast('请输入文本提示词。', 'error'); input.focus(); return; }
   if (imageUrl && !isAcceptedImageSource(imageUrl)) { showToast('请使用本地图片，或填写公开可访问的 HTTPS 图片地址。', 'error'); return; }
   if (state.ui.chat.autoFullscreen && !isChatFullscreen()) toggleChatFullscreen();
@@ -1565,7 +2029,6 @@ async function completeChat(session) {
     assistant.reasoning = result.reasoning || assistant.reasoning || '';
     assistant.streaming = false;
     assistant.usage = result.usage || null;
-    updateKeyStatus(true);
     showToast('文本响应已完成。');
   } catch (error) {
     typewriter.flushAll();
@@ -1711,11 +2174,32 @@ async function handleImageFiles(event) {
   await addImageReferenceFiles(files);
 }
 
+function handleMediaReferencePreviewKeydown(event) {
+  if (!event.target.matches('.media-ref-visual[role="button"]') || !['Enter', ' '].includes(event.key)) return;
+  event.preventDefault();
+  event.target.click();
+}
+
+function imageReferenceTileMarkup(reference) {
+  const id = escapeHtml(reference.id);
+  const name = reference.name || '参考图';
+  const safeName = escapeHtml(name);
+  return `<div class="reference-tile" data-reference-id="${id}">
+    <div class="reference-tile-media media-ref-visual" role="button" tabindex="0" data-reference-action="preview" data-reference-id="${id}" aria-label="预览 ${safeName}"><img draggable="false" src="${escapeHtml(reference.dataUrl || reference.url)}" alt="${safeName}"></div>
+    <div class="media-ref-footer">
+      <span class="media-ref-name" title="${safeName}">${safeName}</span>
+      <div class="media-ref-actions">
+        <button class="media-ref-remove" type="button" data-reference-action="remove" data-reference-id="${id}" aria-label="移除 ${safeName}" data-tooltip="移除参考图"><i data-lucide="trash-2" aria-hidden="true"></i></button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderImageReferences() {
   const maxRefs = imageModeMaxRefs();
   const grid = $('#image-reference-grid');
   $('#image-reference-count').textContent = `${imageReferences.length} / ${maxRefs}`;
-  grid.innerHTML = imageReferences.map((reference) => `<div class="reference-tile" data-reference-id="${reference.id}"><img draggable="false" src="${escapeHtml(reference.dataUrl || reference.url)}" alt="${escapeHtml(reference.name)}"><button type="button" data-reference-action="remove" data-reference-id="${reference.id}" aria-label="移除参考图"><i data-lucide="x" aria-hidden="true"></i></button></div>`).join('');
+  grid.innerHTML = imageReferences.map(imageReferenceTileMarkup).join('');
   grid.classList.toggle('is-reorderable', imageReferences.length > 1);
   const full = imageReferences.length >= maxRefs;
   const zone = $('#image-drop-zone');
@@ -1730,29 +2214,32 @@ function renderImageReferences() {
 }
 
 function handleReferenceAction(event) {
-  const button = event.target.closest('[data-reference-action="remove"]');
-  if (!button) return;
-  imageReferences = imageReferences.filter((reference) => reference.id !== button.dataset.referenceId);
-  renderImageReferences();
-}
-
-let refDragClickGuard = false;
-let activeMediaDragLayer = null;
-const referenceFlipAnimations = new WeakMap();
-
-function handleReferenceGridClick(event) {
-  if (refDragClickGuard) { event.preventDefault(); return; }
-  if (event.target.closest('[data-reference-action="remove"]')) return;
-  const tile = event.target.closest('.reference-tile');
-  if (!tile) return;
-  const id = tile.dataset.referenceId || tile.querySelector('[data-reference-id]')?.dataset.referenceId;
+  const control = event.target.closest('[data-reference-action]');
+  if (!control) return;
+  const action = control.dataset.referenceAction;
+  const id = control.dataset.referenceId;
   const index = imageReferences.findIndex((reference) => reference.id === id);
   if (index < 0) return;
-  openMediaPreview({
-    items: imageReferences.map((reference) => ({ url: reference.dataUrl || reference.url, title: reference.name || '参考图', kind: 'image' })),
-    index
-  });
+  if (action === 'preview') {
+    openMediaPreview({
+      items: imageReferences.map((reference) => ({ url: reference.dataUrl || reference.url, title: reference.name || '参考图', kind: 'image' })),
+      index,
+      returnFocus: control
+    });
+    return;
+  }
+  if (action !== 'remove') return;
+  imageReferences = imageReferences.filter((reference) => reference.id !== id);
+    renderImageReferences();
+    window.requestAnimationFrame(() => {
+      const cards = $$('#image-reference-grid .reference-tile');
+      const nextCard = cards[Math.min(index, cards.length - 1)];
+      (nextCard?.querySelector('.media-ref-remove') || $('#image-pick-work'))?.focus();
+    });
 }
+
+let activeMediaDragLayer = null;
+const referenceFlipAnimations = new WeakMap();
 
 function animateReferenceFlip(elements, firstRects) {
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
@@ -1892,6 +2379,7 @@ function startPointerReorderGesture(event, { tile, onStart, onMove, onDrop, onCa
       if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) <= dragThreshold) return;
       phase = 'dragging';
       onStart?.(startX, startY);
+      try { tile.setPointerCapture(pointerId); } catch (error) { /* 当前浏览器不支持指针捕获 */ }
     }
     moveEvent.preventDefault();
     const coalesced = moveEvent.getCoalescedEvents?.();
@@ -1909,7 +2397,6 @@ function startPointerReorderGesture(event, { tile, onStart, onMove, onDrop, onCa
   window.addEventListener('blur', handleCancel);
   document.addEventListener('visibilitychange', handleVisibility);
   document.addEventListener('keydown', handleKeydown);
-  try { tile.setPointerCapture(pointerId); } catch (error) { /* 当前浏览器不支持指针捕获 */ }
 }
 
 function findReferenceDropTarget(container, tile, placeholder, clientX, clientY) {
@@ -1934,7 +2421,7 @@ function findReferenceDropTarget(container, tile, placeholder, clientX, clientY)
 function startReferenceDrag(event) {
   if (activeMediaDragLayer) return;
   const tile = event.target.closest('.reference-tile');
-  if (!tile || event.target.closest('[data-reference-action="remove"]')) return;
+  if (!tile || !event.target.closest('.media-ref-visual')) return;
   if (imageReferences.length < 2) return;
   const grid = $('#image-reference-grid');
   if (!grid) return;
@@ -2054,26 +2541,19 @@ function startReferenceDrag(event) {
       const hasDraftChange = draftOrder.some((reference, index) => reference.id !== originOrder[index]?.id);
       const valid = Boolean(target && hasDraftChange);
       if (!valid) restorePlaceholder();
-      markReferenceDragClick();
       finishDrag(valid);
     },
     onCancel: () => {
       if (!dragLayer || !placeholder) return;
       restorePlaceholder();
-      markReferenceDragClick();
       finishDrag(false, { immediate: document.hidden });
     }
   });
 }
 
-function markReferenceDragClick() {
-  refDragClickGuard = true;
-  window.setTimeout(() => { refDragClickGuard = false; }, 120);
-}
-
 function startKeyframeDrag(event) {
   if (activeMediaDragLayer) return;
-  if (event.target.closest('[data-video-ref-action]')) return;
+  if (!event.target.closest('.media-ref-visual')) return;
   if (![0, 1].every((index) => Boolean(videoKeyframeRefs[index]))) return;
   const tile = event.target.closest('.video-ref-shot');
   const pair = event.currentTarget.querySelector('.video-ref-pair');
@@ -2112,6 +2592,7 @@ function startKeyframeDrag(event) {
     const sourceRect = tile.getBoundingClientRect();
     dragLayer?.settleTo(sourceRect, () => {
       tile.classList.remove('is-drag-source');
+      tile.style.pointerEvents = '';
       dragLayer = null;
     }, { immediate });
   };
@@ -2124,6 +2605,7 @@ function startKeyframeDrag(event) {
       if (!dragLayer) return;
       document.body.classList.add('ref-dragging');
       tile.classList.add('is-drag-source');
+      tile.style.pointerEvents = 'none';
     },
     onMove: (moveEvent) => {
       if (!dragLayer) return;
@@ -2135,7 +2617,6 @@ function startKeyframeDrag(event) {
       const target = updateTarget(dropEvent.clientX, dropEvent.clientY);
       const dropIndex = target ? slots.indexOf(target) : -1;
       const valid = dropIndex >= 0;
-      markReferenceDragClick();
       if (!valid) {
         settleBack();
         return;
@@ -2157,53 +2638,67 @@ function startKeyframeDrag(event) {
       dragLayer.settleTo(targetRect, () => {
         videoKeyframeRefs = [...originOrder];
         [videoKeyframeRefs[from], videoKeyframeRefs[dropIndex]] = [videoKeyframeRefs[dropIndex], videoKeyframeRefs[from]];
+        tile.style.pointerEvents = '';
         renderVideoRefs();
         dragLayer = null;
       });
     },
     onCancel: () => {
       if (!dragLayer) return;
-      markReferenceDragClick();
       settleBack({ immediate: document.hidden });
     }
   });
 }
 
-function openImageUrlModal() {
-  const existing = $('#image-url-modal');
+function openReferenceUrlModal({ onConfirm }) {
+  const existing = $('#reference-url-modal');
   if (existing) existing.remove();
+  const returnFocus = document.activeElement;
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
-  backdrop.id = 'image-url-modal';
+  backdrop.id = 'reference-url-modal';
   backdrop.innerHTML = `
-    <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="image-url-modal-title">
+    <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="reference-url-modal-title">
       <div class="modal-topline">
         <span class="section-kicker"><span class="signal-line"></span> 图片来源</span>
-        <button class="icon-button small" type="button" id="image-url-modal-close" aria-label="关闭" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
+        <button class="icon-button small" type="button" id="reference-url-modal-close" aria-label="关闭" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
       </div>
-      <h2 id="image-url-modal-title">填写图片链接</h2>
-      <p class="modal-copy">支持公开可访问的 HTTPS 图片地址，也可以粘贴作品集图片 URL。</p>
-      <div class="url-modal-input-wrap"><i data-lucide="link" aria-hidden="true"></i><input id="image-url-modal-input" type="url" placeholder="https://example.com/image.png" autocomplete="off"></div>
-      <div class="modal-actions"><button class="text-button" type="button" id="image-url-modal-cancel"><i data-lucide="x" aria-hidden="true"></i>取消</button><button class="primary-action" type="button" id="image-url-modal-confirm">确定 <i data-lucide="check" aria-hidden="true"></i></button></div>
+      <h2 id="reference-url-modal-title">填写图片链接</h2>
+      <p class="modal-copy">支持公开可访问的 HTTPS 图片地址。</p>
+      <div class="url-modal-input-wrap"><i data-lucide="link" aria-hidden="true"></i><input id="reference-url-modal-input" type="url" placeholder="https://example.com/image.png" autocomplete="off"></div>
+      <div class="modal-actions"><button class="text-button" type="button" id="reference-url-modal-cancel"><i data-lucide="x" aria-hidden="true"></i>取消</button><button class="primary-action" type="button" id="reference-url-modal-confirm">确定 <i data-lucide="check" aria-hidden="true"></i></button></div>
     </section>`;
   document.body.appendChild(backdrop);
   refreshIcons();
-  const close = () => backdrop.remove();
-  const input = backdrop.querySelector('#image-url-modal-input');
+  syncOverlayState();
+  const close = () => {
+    backdrop.remove();
+    syncOverlayState();
+    if (returnFocus?.isConnected) window.requestAnimationFrame(() => returnFocus.focus());
+  };
+  const input = backdrop.querySelector('#reference-url-modal-input');
   const submit = () => {
     const url = input.value.trim();
     if (!url) { showToast('请填写图片链接。', 'error'); input.focus(); return; }
     if (!isHttpsUrl(url)) { showToast('请填写公开可访问的 HTTPS 图片链接。', 'error'); input.focus(); return; }
-    imageReferences.push({ id: createId('ref'), name: shortText(url, 24), url });
-    renderImageReferences();
+    onConfirm?.(url);
     close();
   };
-  backdrop.querySelector('#image-url-modal-close').addEventListener('click', close);
-  backdrop.querySelector('#image-url-modal-cancel').addEventListener('click', close);
-  backdrop.querySelector('#image-url-modal-confirm').addEventListener('click', submit);
+  backdrop.querySelector('#reference-url-modal-close').addEventListener('click', close);
+  backdrop.querySelector('#reference-url-modal-cancel').addEventListener('click', close);
+  backdrop.querySelector('#reference-url-modal-confirm').addEventListener('click', submit);
   backdrop.addEventListener('click', (event) => { if (event.target === backdrop) close(); });
   input.addEventListener('keydown', (event) => { if (event.key === 'Enter') submit(); });
   input.focus();
+}
+
+function openImageUrlModal() {
+  openReferenceUrlModal({
+    onConfirm: (url) => {
+      imageReferences.push({ id: createId('ref'), name: shortText(url, 24), url });
+      renderImageReferences();
+    }
+  });
 }
 
 function videoRefValue(ref) {
@@ -2233,26 +2728,34 @@ function videoRefEmptyMarkup(title) {
   </div>`;
 }
 
-function videoRefTileMarkup(ref, index = 0) {
+function videoRefTileMarkup(ref, index = 0, kind = 'image') {
+  const name = ref.name || shortText(ref.url || '', 30) || '视频参考图';
+  const safeName = escapeHtml(name);
   return `<div class="video-ref-shot" data-video-ref-index="${index}">
-    <img draggable="false" src="${escapeHtml(ref.dataUrl || ref.url)}" alt="${escapeHtml(ref.name || '视频参考图')}">
-    <div class="video-ref-shot-bar"><span>${escapeHtml(ref.name || shortText(ref.url || '', 30))}</span><button class="icon-button small" type="button" data-video-ref-action="remove" aria-label="移除参考图"><i data-lucide="x" aria-hidden="true"></i></button></div>
+    <div class="video-ref-media media-ref-visual" role="button" tabindex="0" data-video-ref-action="preview" aria-label="预览 ${safeName}"><img draggable="false" src="${escapeHtml(ref.dataUrl || ref.url)}" alt="${safeName}"></div>
+    <div class="media-ref-footer">
+      <span class="media-ref-name" title="${safeName}">${safeName}</span>
+      <div class="media-ref-actions">
+        <button class="media-ref-remove" type="button" data-video-ref-action="remove" aria-label="移除 ${safeName}" data-tooltip="移除参考图"><i data-lucide="trash-2" aria-hidden="true"></i></button>
+      </div>
+    </div>
   </div>`;
 }
 
 function renderVideoRefs() {
   const imageGrid = $('#video-image-ref-grid');
   if (imageGrid) {
-    imageGrid.innerHTML = videoImageRefs.length ? videoRefTileMarkup(videoImageRefs[0], 0) : videoRefEmptyMarkup('添加首帧参考图');
+    imageGrid.innerHTML = videoImageRefs.length ? videoRefTileMarkup(videoImageRefs[0], 0, 'image') : videoRefEmptyMarkup('添加首帧参考图');
     $('#video-image-ref-count').textContent = `${videoImageRefs.length ? 1 : 0} / 1`;
   }
   [0, 1].forEach((index) => {
     const slot = $(`#video-keyframe-slot-${index}`);
     if (!slot) return;
-    slot.innerHTML = videoKeyframeRefs[index] ? videoRefTileMarkup(videoKeyframeRefs[index], index) : videoRefEmptyMarkup('添加关键帧');
+    slot.innerHTML = videoKeyframeRefs[index] ? videoRefTileMarkup(videoKeyframeRefs[index], index, 'keyframe') : videoRefEmptyMarkup('添加关键帧');
   });
   const pair = $('#video-keyframe-inputs .video-ref-pair');
   if (pair) pair.classList.toggle('is-reorderable', [0, 1].every((index) => Boolean(videoKeyframeRefs[index])));
+  updateVideoPromptNote();
   refreshIcons();
 }
 
@@ -2274,20 +2777,24 @@ function handleVideoRefFiles(kind, event) {
 }
 
 function handleVideoRefAction(kind, event) {
-  if (refDragClickGuard) { event.preventDefault(); return; }
   const button = event.target.closest('[data-video-ref-action]');
-  if (!button) {
-    const img = event.target.closest('.video-ref-shot img');
-    if (img) openVideoRefPreview(img.getAttribute('src'));
-    return;
-  }
+  if (!button) return;
   let index = 0;
   if (kind === 'keyframes') index = button.closest('#video-keyframe-slot-1') ? 1 : 0;
   const action = button.dataset.videoRefAction;
+  if (action === 'preview') {
+    const ref = kind === 'image' ? videoImageRefs[0] : videoKeyframeRefs[index];
+    if (ref) openVideoRefPreview(videoRefValue(ref), button);
+    return;
+  }
   if (action === 'remove') {
     if (kind === 'image') videoImageRefs = [];
     else videoKeyframeRefs[index] = undefined;
     renderVideoRefs();
+    window.requestAnimationFrame(() => {
+      const slot = kind === 'image' ? $('#video-image-ref-grid') : $(`#video-keyframe-slot-${index}`);
+      slot?.querySelector('[data-video-ref-action="upload"]')?.focus();
+    });
     return;
   }
   videoRefTarget = { mode: kind, index };
@@ -2296,13 +2803,23 @@ function handleVideoRefAction(kind, event) {
     return;
   }
   if (action === 'pick') {
-    openWorkPicker({ onPick: (item) => { setVideoRef(kind, index, { id: createId('ref'), name: item.title, url: item.url }); } });
+    const current = kind === 'image' ? videoImageRefs[0] : videoKeyframeRefs[index];
+    const currentUrl = current ? safeMediaUrl(videoRefValue(current)) : '';
+    const workUrls = new Set(state.works.filter((work) => work.kind === 'image').map((work) => safeMediaUrl(work.url)).filter(Boolean));
+    openWorkPicker({
+      max: 1,
+      selected: currentUrl && workUrls.has(currentUrl) ? [currentUrl] : [],
+      onConfirm: (items) => {
+        const item = items[0];
+        if (item) setVideoRef(kind, index, { id: createId('ref'), name: item.title, url: item.url });
+      }
+    });
     return;
   }
   if (action === 'link') openVideoUrlModal(kind, index);
 }
 
-function openVideoRefPreview(srcUrl) {
+function openVideoRefPreview(srcUrl, returnFocus = document.activeElement) {
   const items = [];
   if (videoImageRefs[0]) items.push({ url: videoRefValue(videoImageRefs[0]), title: videoImageRefs[0].name || '首帧参考图', meta: '首帧', kind: 'image' });
   videoKeyframeRefs.forEach((ref, index) => {
@@ -2310,43 +2827,13 @@ function openVideoRefPreview(srcUrl) {
   });
   if (!items.length) return;
   const index = Math.max(0, items.findIndex((item) => item.url === srcUrl));
-  openMediaPreview({ items, index });
+  openMediaPreview({ items, index, returnFocus });
 }
 
 function openVideoUrlModal(kind, index) {
-  const existing = $('#video-url-modal');
-  if (existing) existing.remove();
-  const backdrop = document.createElement('div');
-  backdrop.className = 'modal-backdrop';
-  backdrop.id = 'video-url-modal';
-  backdrop.innerHTML = `
-    <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="video-url-modal-title">
-      <div class="modal-topline">
-        <span class="section-kicker"><span class="signal-line"></span> 图片来源</span>
-        <button class="icon-button small" type="button" id="video-url-modal-close" aria-label="关闭" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
-      </div>
-      <h2 id="video-url-modal-title">填写图片链接</h2>
-      <p class="modal-copy">支持公开可访问的 HTTPS 图片地址，也可以粘贴作品集图片 URL。</p>
-      <div class="url-modal-input-wrap"><i data-lucide="link" aria-hidden="true"></i><input id="video-url-modal-input" type="url" placeholder="https://example.com/image.png" autocomplete="off"></div>
-      <div class="modal-actions"><button class="text-button" type="button" id="video-url-modal-cancel"><i data-lucide="x" aria-hidden="true"></i>取消</button><button class="primary-action" type="button" id="video-url-modal-confirm">确定 <i data-lucide="check" aria-hidden="true"></i></button></div>
-    </section>`;
-  document.body.appendChild(backdrop);
-  refreshIcons();
-  const close = () => backdrop.remove();
-  const input = backdrop.querySelector('#video-url-modal-input');
-  const submit = () => {
-    const url = input.value.trim();
-    if (!url) { showToast('请填写图片链接。', 'error'); input.focus(); return; }
-    if (!isHttpsUrl(url)) { showToast('请填写公开可访问的 HTTPS 图片链接。', 'error'); input.focus(); return; }
-    setVideoRef(kind, index, { id: createId('ref'), name: shortText(url, 24), url });
-    close();
-  };
-  backdrop.querySelector('#video-url-modal-close').addEventListener('click', close);
-  backdrop.querySelector('#video-url-modal-cancel').addEventListener('click', close);
-  backdrop.querySelector('#video-url-modal-confirm').addEventListener('click', submit);
-  backdrop.addEventListener('click', (event) => { if (event.target === backdrop) close(); });
-  input.addEventListener('keydown', (event) => { if (event.key === 'Enter') submit(); });
-  input.focus();
+  openReferenceUrlModal({
+    onConfirm: (url) => setVideoRef(kind, index, { id: createId('ref'), name: shortText(url, 24), url })
+  });
 }
 
 function imagePromptReferenceUrls() {
@@ -2390,7 +2877,15 @@ function handleImageResultAction(event) {
   const url = safeMediaUrl(imageResult?.url);
   if (!url) return;
   openMediaPreview({
-    items: [{ url, title: 'Agnes 生成图像', meta: `${imageResult.size || ''} / ${imageResult.ratio || ''}`.replace(/^\/\s*/, ''), kind: 'image' }],
+    items: [{
+      url,
+      title: 'Agnes 生成图像',
+      meta: `${imageResult.size || ''} / ${imageResult.ratio || ''}`.replace(/^\/\s*/, ''),
+      kind: 'image',
+      prompt: imageResult.prompt || imageActivePrompt || '',
+      generation: imageResult.generation || null,
+      createdAt: imageResult.createdAt || null
+    }],
     index: 0
   });
 }
@@ -2418,6 +2913,83 @@ function composeImagePrompt(prompt) {
   return preset.prompt ? `${prompt}\n\n风格要求：${preset.prompt}` : prompt;
 }
 
+function createImageGenerationSnapshot({ mode, referenceCount, createdAt }) {
+  const preset = IMAGE_STYLE_PRESETS[state.ui.image.stylePreset] || IMAGE_STYLE_PRESETS.none;
+  return {
+    model: CONFIG.models.image,
+    mode,
+    modeLabel: IMAGE_MODE_LABELS[mode] || mode,
+    size: state.ui.image.size,
+    ratio: state.ui.image.ratio,
+    stylePreset: state.ui.image.stylePreset,
+    styleLabel: preset.label,
+    referenceCount,
+    responseFormat: 'URL',
+    createdAt
+  };
+}
+
+function videoPromptReferenceUrls() {
+  const refs = state.ui.video.mode === 'image'
+    ? videoImageRefs.slice(0, 1)
+    : state.ui.video.mode === 'keyframes'
+      ? videoKeyframeRefs.slice(0, 2)
+      : [];
+  return refs.filter(isUsableVideoRef).map(videoRefValue);
+}
+
+function updateVideoPromptNote() {
+  const note = $('#video-prompt-note');
+  if (!note) return;
+  const preset = VIDEO_STYLE_PRESETS[state.ui.video.stylePreset] || VIDEO_STYLE_PRESETS.none;
+  const referenceCount = videoPromptReferenceUrls().length;
+  const referenceNote = state.ui.video.mode === 'image' && referenceCount
+    ? 'AI 会先读取首帧参考图，再设计动作和运镜。'
+    : state.ui.video.mode === 'keyframes' && referenceCount
+      ? `AI 会按顺序读取 ${referenceCount} 张关键帧，再设计过渡过程。`
+      : 'AI 会根据文字要求设计动作、运镜和节奏。';
+  const styleNote = preset.prompt ? `创建任务时追加“${preset.label}”风格要求。` : '当前不追加风格预设。';
+  note.querySelector('span').textContent = `${referenceNote} ${styleNote}`;
+}
+
+function setVideoStylePreset(preset, persist = true) {
+  const next = VIDEO_STYLE_PRESETS[preset] ? preset : 'none';
+  const selected = VIDEO_STYLE_PRESETS[next];
+  state.ui.video.stylePreset = next;
+  $$('[data-video-style]').forEach((button) => button.classList.toggle('is-active', button.dataset.videoStyle === next));
+  $('#video-style-summary').textContent = selected.label;
+  updateVideoPromptNote();
+  if (persist) saveState();
+}
+
+function composeVideoPrompt(prompt) {
+  const preset = VIDEO_STYLE_PRESETS[state.ui.video.stylePreset] || VIDEO_STYLE_PRESETS.none;
+  return preset.prompt ? `${prompt}\n\n视频风格要求：${preset.prompt}` : prompt;
+}
+
+function createVideoGenerationSnapshot({ mode, referenceCount, createdAt, settings }) {
+  const dimensions = VIDEO_DIMENSIONS[settings.ratio] || VIDEO_DIMENSIONS['16:9'];
+  const duration = VIDEO_PRESETS[settings.duration] || VIDEO_PRESETS[5];
+  const style = VIDEO_STYLE_PRESETS[settings.stylePreset] || VIDEO_STYLE_PRESETS.none;
+  return {
+    model: CONFIG.models.video,
+    mode,
+    modeLabel: VIDEO_MODE_LABELS[mode] || mode,
+    width: dimensions.width,
+    height: dimensions.height,
+    ratio: settings.ratio,
+    duration: Number(settings.duration),
+    frames: duration.frames,
+    frameRate: Number(settings.frameRate),
+    stylePreset: settings.stylePreset,
+    styleLabel: style.label,
+    referenceCount,
+    negativePrompt: settings.negativePrompt || '',
+    seed: settings.seed === '' ? '' : settings.seed,
+    createdAt
+  };
+}
+
 function cleanPromptAssistantText(value) {
   return String(value || '')
     .replace(/^```(?:text|markdown)?\s*/i, '')
@@ -2441,30 +3013,57 @@ function buildImagePromptInstruction(kind) {
   return `请优化下面这条 Agnes 图像提示词。保留原始意图，不改变主体和核心内容；${referenceInstruction}根据优化方向补足主体细节、空间关系、构图、镜头、光线、材质、色彩与画面质量。当前模式：${modeLabel}。优化方向：${direction}。风格预设：${preset.prompt || '不额外限定风格'}。原始提示词：${basePrompt}。只返回优化后的完整提示词，不要解释，不要加标题，不要使用 Markdown。`;
 }
 
-function setPromptAssistButtons(busy, activeKind = '') {
-  if (activeKind) promptAssistActive = activeKind;
+function buildVideoPromptInstruction(kind) {
+  const basePrompt = $('#video-prompt').value.trim();
+  const direction = $('#video-keywords').value.trim() || '请综合补足主体动作、运动轨迹、镜头调度、节奏、光线变化和时序连续性';
+  const preset = VIDEO_STYLE_PRESETS[state.ui.video.stylePreset] || VIDEO_STYLE_PRESETS.none;
+  const mode = state.ui.video.mode;
+  const modeLabel = { text: '文生视频', image: '图生视频', keyframes: '关键帧动画' }[mode] || '文生视频';
+  const referenceUrls = videoPromptReferenceUrls();
+  const referenceInstruction = mode === 'image' && referenceUrls.length
+    ? '你会收到一张首帧参考图。请先观察图中真实可见的主体、姿态、场景、构图、光线和材质，以它作为视频起始状态，设计合理运动；不得凭空替换主体或改变身份。'
+    : mode === 'keyframes' && referenceUrls.length
+      ? `你会按起始帧、结束帧的顺序收到 ${referenceUrls.length} 张关键帧。请先观察两帧中主体、姿态、场景和构图的差异，明确描述从第一帧到第二帧的连续过渡；不得颠倒首尾、替换主体或破坏身份一致性。`
+      : '当前没有参考帧，请完全根据文字要求设计连续画面。';
+  if (kind === 'random') {
+    return `请为 Agnes 视频模型创作一条可直接使用的中文视频生成提示词。当前模式：${modeLabel}。${referenceInstruction}创作方向：${direction}。风格预设：${preset.prompt || '自由发挥'}。提示词必须明确主体、起始状态、动作过程、结束状态、场景、镜头运动、节奏、光线和氛围，保持物理运动合理、时序连续、主体身份稳定；使用一个连贯镜头，避免互相冲突的动作和运镜。只返回一段提示词，不要解释，不要加标题，不要使用 Markdown。`;
+  }
+  return `请优化下面这条 Agnes 视频生成提示词。保留原始意图、主体身份和核心动作；${referenceInstruction}根据优化方向补足动作轨迹、时间顺序、镜头调度、景别变化、节奏、光线变化、环境反馈与首尾衔接，消除互相冲突的动作和运镜，提升主体稳定性与画面连续性。当前模式：${modeLabel}。优化方向：${direction}。风格预设：${preset.prompt || '不额外限定风格'}。原始提示词：${basePrompt}。只返回优化后的完整提示词，不要解释，不要加标题，不要使用 Markdown。`;
+}
+
+function promptAssistButton(target, kind) {
+  return $(`#${target}-${kind === 'random' ? 'random' : 'optimize'}-prompt`);
+}
+
+function setPromptAssistButtons(target, busy, activeKind = '') {
+  const assist = promptAssistStates[target];
+  if (!assist) return;
+  if (activeKind) assist.activeKind = activeKind;
   const labels = { random: ['随机灵感', '取消灵感'], optimize: ['优化提示词', '取消优化'] };
   ['random', 'optimize'].forEach((kind) => {
-    const button = $(`#image-${kind === 'random' ? 'random' : 'optimize'}-prompt`);
+    const button = promptAssistButton(target, kind);
+    if (!button) return;
     button.disabled = busy && activeKind !== kind;
-    button.classList.toggle('is-primary', busy ? activeKind === kind : promptAssistActive === kind);
+    button.classList.toggle('is-primary', busy ? activeKind === kind : assist.activeKind === kind);
+    button.setAttribute('aria-busy', busy && activeKind === kind ? 'true' : 'false');
     const label = labels[kind][busy && activeKind === kind ? 1 : 0];
     button.querySelector('span').textContent = label;
   });
 }
 
-function handlePromptAssistCancel(kind) {
-  if (!promptAssistRequest) return;
-  const button = $(`#image-${kind === 'random' ? 'random' : 'optimize'}-prompt`);
-  if (!promptAssistCancelArmed) {
-    promptAssistCancelArmed = true;
+function handlePromptAssistCancel(target, kind) {
+  const assist = promptAssistStates[target];
+  if (!assist?.request) return;
+  const button = promptAssistButton(target, kind);
+  if (!assist.cancelArmed) {
+    assist.cancelArmed = true;
     if (button) {
       button.querySelector('span').textContent = '再点一次确认取消';
       button.classList.add('is-confirming');
     }
-    window.clearTimeout(promptAssistCancelTimer);
-    promptAssistCancelTimer = window.setTimeout(() => {
-      promptAssistCancelArmed = false;
+    window.clearTimeout(assist.cancelTimer);
+    assist.cancelTimer = window.setTimeout(() => {
+      assist.cancelArmed = false;
       if (button) {
         button.querySelector('span').textContent = kind === 'random' ? '取消灵感' : '取消优化';
         button.classList.remove('is-confirming');
@@ -2472,45 +3071,55 @@ function handlePromptAssistCancel(kind) {
     }, 3000);
     return;
   }
-  promptAssistCancelArmed = false;
-  window.clearTimeout(promptAssistCancelTimer);
-  promptAssistRequest.abort();
+  assist.cancelArmed = false;
+  window.clearTimeout(assist.cancelTimer);
+  assist.request.abort();
   showToast('已取消提示词生成。');
 }
 
-async function requestImagePrompt(kind) {
-  if (promptAssistRequest || !requireApiKey()) return;
-  const basePrompt = $('#image-prompt').value.trim();
+async function requestPromptAssist(target, kind) {
+  const assist = promptAssistStates[target];
+  if (!assist || assist.request || !requireApiKey()) return;
+  const input = $(`#${target}-prompt`);
+  const basePrompt = input.value.trim();
   if (kind === 'optimize' && !basePrompt) {
     showToast('请先写下已有提示词，再进行优化。', 'error');
-    $('#image-prompt').focus();
+    input.focus();
     return;
   }
-  promptAssistRequest = new AbortController();
-  setPromptAssistButtons(true, kind);
+  const isVideo = target === 'video';
+  const referenceUrls = isVideo ? videoPromptReferenceUrls() : imagePromptReferenceUrls();
+  assist.request = new AbortController();
+  setPromptAssistButtons(target, true, kind);
   try {
-    const promptContent = [{ type: 'text', text: buildImagePromptInstruction(kind) }];
-    imagePromptReferenceUrls().forEach((url) => promptContent.push({ type: 'image_url', image_url: { url } }));
+    const instruction = isVideo ? buildVideoPromptInstruction(kind) : buildImagePromptInstruction(kind);
+    const promptContent = [{ type: 'text', text: instruction }];
+    referenceUrls.forEach((url) => promptContent.push({ type: 'image_url', image_url: { url } }));
     const result = await AgnesClient.chat({
       messages: [
-        { role: 'system', content: '你是 Agnes 图像提示词设计师，擅长把创作意图整理为可执行的高质量生图提示词。' },
+        { role: 'system', content: isVideo
+          ? '你是 Agnes 视频提示词设计师，擅长把创作意图和参考帧整理为动作明确、运镜合理、时序连贯的高质量视频提示词。'
+          : '你是 Agnes 图像提示词设计师，擅长把创作意图整理为可执行的高质量生图提示词。' },
         { role: 'user', content: promptContent }
       ],
-      settings: { temperature: kind === 'random' ? 0.95 : 0.55, maxTokens: 768, thinking: false },
-      signal: promptAssistRequest.signal,
+      settings: { temperature: kind === 'random' ? 0.95 : 0.55, maxTokens: isVideo ? 896 : 768, thinking: false },
+      signal: assist.request.signal,
       onToken: () => {}
     });
     const prompt = cleanPromptAssistantText(result.content);
     if (!prompt) throw new AgnesApiError('Agnes 没有返回可用的提示词。');
-    $('#image-prompt').value = prompt;
-    showToast(kind === 'random' ? '随机灵感已写入提示词。' : '提示词已优化。');
+    input.value = prompt;
+    showToast(kind === 'random'
+      ? `${isVideo ? '视频' : '图像'}随机灵感已写入提示词。`
+      : `${isVideo ? '视频' : '图像'}提示词已优化。`);
   } catch (error) {
     if (error.name !== 'AbortError') showToast(error.message, 'error');
   } finally {
-    promptAssistRequest = null;
-    promptAssistCancelArmed = false;
-    window.clearTimeout(promptAssistCancelTimer);
-    setPromptAssistButtons(false);
+    assist.request = null;
+    assist.cancelArmed = false;
+    window.clearTimeout(assist.cancelTimer);
+    promptAssistButton(target, kind)?.classList.remove('is-confirming');
+    setPromptAssistButtons(target, false);
   }
 }
 
@@ -2525,7 +3134,7 @@ function renderImageResult() {
   }
   if (imageResult.status === 'loading') {
     actions.hidden = true;
-    result.innerHTML = `<div class="loading-state"><div class="loading-ring"></div><span>正在整理画面...</span><small>图像生成进行中</small>${promptPrintMarkup('image')}<button class="image-cancel-button" type="button" id="image-cancel-generate">取消生成</button></div>`;
+    result.innerHTML = `<div class="loading-state"><div class="loading-ring"></div><span>正在整理画面...</span><small>图像生成进行中</small>${promptPrintMarkup('image', imageActivePrompt)}<button class="image-cancel-button" type="button" id="image-cancel-generate">取消生成</button></div>`;
     ensurePromptPrint('image');
     refreshIcons();
     return;
@@ -2538,7 +3147,7 @@ function renderImageResult() {
     return;
   }
   actions.hidden = false;
-  result.innerHTML = `<figure class="result-figure"><img src="${escapeHtml(url)}" alt="Agnes 生成图像"><figcaption class="result-caption"><span>${escapeHtml(imageResult.size)} / ${escapeHtml(imageResult.ratio)}</span><span>${escapeHtml(shortText(url, 48))}</span></figcaption></figure>${imageActivePrompt ? promptPrintMiniMarkup('image', imageActivePrompt) : ''}`;
+  result.innerHTML = `<div class="output-result-stack image-result-stack"><figure class="result-figure"><img src="${escapeHtml(url)}" alt="Agnes 生成图像"><figcaption class="result-caption"><span>${escapeHtml(imageResult.size)} / ${escapeHtml(imageResult.ratio)}</span><span>${escapeHtml(shortText(url, 48))}</span></figcaption></figure>${imageActivePrompt ? promptPrintMiniMarkup('image', imageActivePrompt) : ''}</div>`;
   refreshIcons();
 }
 
@@ -2551,6 +3160,9 @@ async function handleImageGenerate() {
   if (!basePrompt) { showToast('请输入图像提示词，或先使用随机灵感。', 'error'); $('#image-prompt').focus(); return; }
   if (mode !== 'text' && !imageReferences.length) { showToast('图生图和多图合成至少需要一张参考图。', 'error'); return; }
   const button = $('#image-generate');
+  const createdAt = Date.now();
+  const refImages = imageReferences.map((reference) => reference.dataUrl || reference.url).slice(0, imageModeMaxRefs());
+  const generation = createImageGenerationSnapshot({ mode, referenceCount: refImages.length, createdAt });
   button.disabled = true;
   imageResult = { status: 'loading' };
   imageActivePrompt = prompt;
@@ -2560,14 +3172,12 @@ async function handleImageGenerate() {
   window.clearTimeout(imageCancelTimer);
   imageCancelArmed = false;
   try {
-    const refImages = imageReferences.map((reference) => reference.dataUrl || reference.url).slice(0, imageModeMaxRefs());
-    const payload = await AgnesClient.generateImage({ prompt, size: state.ui.image.size, ratio: state.ui.image.ratio, images: refImages, signal: imageRequestController.signal });
+    const payload = await AgnesClient.generateImage({ prompt, size: generation.size, ratio: generation.ratio, images: refImages, signal: imageRequestController.signal });
     const item = payload.data?.[0] || {};
     const url = item.url || (item.b64_json ? (item.b64_json.startsWith('data:') ? item.b64_json : `data:image/png;base64,${item.b64_json}`) : '');
     if (!url) throw new AgnesApiError('Agnes 没有返回图像 URL 或 Base64 内容。');
-    imageResult = { status: 'complete', url, size: state.ui.image.size, ratio: state.ui.image.ratio, prompt, createdAt: Date.now() };
-    addWork({ kind: 'image', title: shortText(basePrompt, 38), prompt, url, meta: `${state.ui.image.size} / ${state.ui.image.ratio}`, createdAt: imageResult.createdAt });
-    updateKeyStatus(true);
+    imageResult = { status: 'complete', url, size: generation.size, ratio: generation.ratio, prompt, generation, createdAt };
+    addWork({ kind: 'image', title: shortText(basePrompt, 38), prompt, url, meta: `${generation.size} / ${generation.ratio}`, generation, createdAt });
     showToast('图像已生成并保存到作品。');
   } catch (error) {
     if (error.name === 'AbortError') {
@@ -2614,7 +3224,8 @@ function handleImageCancelClick() {
   imageRequestController.abort();
 }
 
-function promptPrintMarkup(kind) {
+function promptPrintMarkup(kind, text = '') {
+  const preview = shortText(text, 180) || '提示词准备中…';
   return `<div class="prompt-print" id="${kind}-prompt-print">
     <div class="prompt-print-head">
       <span class="prompt-print-title"><i data-lucide="printer" aria-hidden="true"></i>发送给模型的提示词</span>
@@ -2623,25 +3234,28 @@ function promptPrintMarkup(kind) {
         <button class="text-button" type="button" data-print-action="view"><i data-lucide="expand" aria-hidden="true"></i>完整查看</button>
       </span>
     </div>
-    <pre class="prompt-print-text" id="${kind}-prompt-print-text"></pre>
+    <pre class="prompt-print-text" id="${kind}-prompt-print-text" title="${escapeHtml(text)}">${escapeHtml(preview)}</pre>
     <span class="prompt-print-status" id="${kind}-prompt-print-status"></span>
   </div>`;
 }
 
 function promptPrintMiniMarkup(kind, text) {
+  const fullText = text || '暂无可用提示词';
   return `<div class="prompt-print-mini" id="${kind}-prompt-print-mini">
     <span class="prompt-print-mini-label"><i data-lucide="printer" aria-hidden="true"></i>已发送提示词</span>
-    <span class="prompt-print-mini-text">${escapeHtml(shortText(text || '', 46))}</span>
-    <button class="text-button" type="button" data-print-action="copy"><i data-lucide="copy" aria-hidden="true"></i>复制</button>
-    <button class="text-button" type="button" data-print-action="view"><i data-lucide="expand" aria-hidden="true"></i>完整查看</button>
+    <span class="prompt-print-mini-actions">
+      <button class="text-button" type="button" data-print-action="copy"><i data-lucide="copy" aria-hidden="true"></i>复制</button>
+      <button class="text-button" type="button" data-print-action="view"><i data-lucide="expand" aria-hidden="true"></i>完整查看</button>
+    </span>
+    <span class="prompt-print-mini-text" title="${escapeHtml(fullText)}">${escapeHtml(fullText)}</span>
   </div>`;
 }
 
 function startPromptPrint(kind, text) {
   stopPromptPrint(kind);
   if (!text) return;
-  promptPrintStates[kind] = { text, index: 0, done: false, timer: 0 };
-  promptPrintStep(kind);
+  promptPrintStates[kind] = { text, index: text.length, done: true, timer: 0 };
+  syncPromptPrintDom(kind);
 }
 
 function stopPromptPrint(kind) {
@@ -2669,7 +3283,10 @@ function syncPromptPrintDom(kind) {
   const textNode = document.getElementById(`${kind}-prompt-print-text`);
   const statusNode = document.getElementById(`${kind}-prompt-print-status`);
   if (container) container.classList.toggle('done', Boolean(state?.done));
-  if (textNode) textNode.textContent = state ? state.text.slice(0, state.index) : '';
+  if (textNode && state) {
+    textNode.textContent = shortText(state.text, 180);
+    textNode.title = state.text;
+  }
   if (statusNode) statusNode.textContent = state?.done ? '已发送，等待模型生成…' : '';
 }
 
@@ -2725,7 +3342,7 @@ function renderVideoJob() {
   if (status === 'completed' && videoJob.url) {
     const url = safeMediaUrl(videoJob.url);
     stopPromptPrint('video');
-    result.innerHTML = `<div class="video-result"><video controls preload="metadata" src="${escapeHtml(url)}"></video><div class="video-result-actions"><button class="icon-button small" type="button" data-video-action="copy" aria-label="复制视频 URL" data-tooltip="复制视频 URL"><i data-lucide="link" aria-hidden="true"></i></button><button class="icon-button small" type="button" data-video-action="download" aria-label="下载视频" data-tooltip="下载视频"><i data-lucide="download" aria-hidden="true"></i></button></div><div class="job-meta"><div class="job-meta-item"><small>状态</small><strong>已完成</strong></div><div class="job-meta-item"><small>尺寸</small><strong>${escapeHtml(videoJob.size || '--')}</strong></div><div class="job-meta-item"><small>时长</small><strong>${escapeHtml(videoJob.seconds || '--')} 秒</strong></div></div></div>${videoJob.prompt ? promptPrintMiniMarkup('video', videoJob.prompt) : ''}`;
+    result.innerHTML = `<div class="output-result-stack video-result-stack"><div class="video-result"><video controls preload="metadata" src="${escapeHtml(url)}"></video><div class="video-result-actions"><button class="icon-button small" type="button" data-video-action="preview" aria-label="预览视频" data-tooltip="预览视频"><i data-lucide="scan-eye" aria-hidden="true"></i></button><button class="icon-button small" type="button" data-video-action="copy" aria-label="复制视频 URL" data-tooltip="复制视频 URL"><i data-lucide="link" aria-hidden="true"></i></button><button class="icon-button small" type="button" data-video-action="download" aria-label="下载视频" data-tooltip="下载视频"><i data-lucide="download" aria-hidden="true"></i></button></div><div class="job-meta"><div class="job-meta-item"><small>状态</small><strong>已完成</strong></div><div class="job-meta-item"><small>尺寸</small><strong>${escapeHtml(videoJob.size || '--')}</strong></div><div class="job-meta-item"><small>时长</small><strong>${escapeHtml(videoJob.seconds || '--')} 秒</strong></div></div></div>${videoJob.prompt ? promptPrintMiniMarkup('video', videoJob.prompt) : ''}</div>`;
     refreshIcons();
     return;
   }
@@ -2735,7 +3352,7 @@ function renderVideoJob() {
       ? `<p class="job-notice">${escapeHtml(videoJob.pollNotice)}</p>`
       : '';
   const printBlock = isActive
-    ? promptPrintMarkup('video')
+    ? promptPrintMarkup('video', videoJob.prompt)
     : (videoJob.prompt ? promptPrintMiniMarkup('video', videoJob.prompt) : '');
   result.innerHTML = `<div class="job-card"><div class="job-status-row"><span class="job-status ${statusClass}"><span class="status-light ${status === 'failed' || videoJob.rateLimited ? '' : 'is-live'}"></span>${statusText}</span><span class="mono">${progress}%</span></div><div class="job-progress"><div class="job-progress-bar" style="width:${progress}%"></div></div><div class="job-meta"><div class="job-meta-item"><small>视频编号</small><strong>${escapeHtml(shortText(videoJob.videoId || '--', 18))}</strong></div><div class="job-meta-item"><small>尺寸</small><strong>${escapeHtml(videoJob.size || '--')}</strong></div><div class="job-meta-item"><small>状态</small><strong>${escapeHtml(statusText)}</strong></div></div>${notice}${printBlock}</div>`;
   if (isActive) {
@@ -2752,23 +3369,28 @@ function getVideoSettings() {
 
 async function handleVideoGenerate() {
   if (!requireApiKey()) return;
-  const prompt = $('#video-prompt').value.trim();
+  const basePrompt = $('#video-prompt').value.trim();
+  const prompt = composeVideoPrompt(basePrompt);
   const mode = state.ui.video.mode;
-  if (!prompt) { showToast('请输入视频提示词。', 'error'); $('#video-prompt').focus(); return; }
+  if (!basePrompt) { showToast('请输入视频提示词，或先使用随机灵感。', 'error'); $('#video-prompt').focus(); return; }
   const imageRef = videoImageRefs[0] || null;
   const keyframeRefs = [videoKeyframeRefs[0], videoKeyframeRefs[1]].filter(isUsableVideoRef);
   if (mode === 'image' && !isUsableVideoRef(imageRef)) { showToast('图生视频需要一张首帧参考图（上传图片或填写 HTTPS 链接）。', 'error'); return; }
   if (mode === 'keyframes' && keyframeRefs.length !== 2) { showToast('关键帧动画需要两张参考图（上传图片或填写 HTTPS 链接）。', 'error'); return; }
   const button = $('#video-generate');
+  const createdAt = Date.now();
+  const settings = getVideoSettings();
+  const referenceCount = mode === 'image' ? 1 : mode === 'keyframes' ? keyframeRefs.length : 0;
+  const generation = createVideoGenerationSnapshot({ mode, referenceCount, createdAt, settings });
   button.disabled = true;
   videoPollController = new AbortController();
   videoRefreshRequested = false;
   videoRefreshInFlight = false;
-  videoJob = { status: 'creating', progress: 0, createdAt: Date.now(), prompt };
+  videoJob = { status: 'creating', progress: 0, createdAt, prompt, generation };
   startPromptPrint('video', prompt);
   renderVideoJob();
   try {
-    const created = await AgnesClient.createVideo({ mode, prompt, imageUrl: imageRef ? videoRefValue(imageRef) : '', keyframeUrls: keyframeRefs.map(videoRefValue), settings: getVideoSettings(), signal: videoPollController.signal });
+    const created = await AgnesClient.createVideo({ mode, prompt, imageUrl: imageRef ? videoRefValue(imageRef) : '', keyframeUrls: keyframeRefs.map(videoRefValue), settings, signal: videoPollController.signal });
     const videoId = created.video_id || created.task_id || created.id;
     if (!videoId) throw new AgnesApiError('任务创建成功，但响应中没有 video_id 或 task_id。');
     videoJob = { ...videoJob, ...created, videoId, status: created.status || 'queued', progress: Number(created.progress || 0), size: created.size, seconds: created.seconds, prompt };
@@ -2835,8 +3457,15 @@ async function pollVideo(videoId, prompt, { single = false } = {}) {
     if (videoJob.status === 'completed') {
       videoJob.url = payload.metadata?.url || payload.url || '';
       if (!videoJob.url) throw new AgnesApiError('视频任务已完成，但响应中没有 metadata.url。');
-      addWork({ kind: 'video', title: shortText(prompt, 38), prompt, url: videoJob.url, meta: `${videoJob.size || '--'} / ${videoJob.seconds || '--'} 秒`, createdAt: Date.now() });
-      updateKeyStatus(true);
+      addWork({
+        kind: 'video',
+        title: shortText(prompt, 38),
+        prompt,
+        url: videoJob.url,
+        meta: `${videoJob.size || '--'} / ${videoJob.seconds || '--'} 秒`,
+        generation: videoJob.generation || null,
+        createdAt: videoJob.createdAt || Date.now()
+      });
       showToast('视频已完成并保存到作品。');
       renderVideoJob();
       return;
@@ -2962,7 +3591,7 @@ function handleWorkAction(event) {
     const filtered = state.works.filter((work) => activeWorkFilter === 'all' || work.kind === activeWorkFilter);
     const work = filtered.find((item) => item.id === mediaArea.closest('.work-card')?.dataset.workId);
     if (!work) return;
-    const items = filtered.map((item) => ({ url: safeMediaUrl(item.url), title: item.title, meta: item.meta || '', kind: item.kind })).filter((item) => item.url);
+    const items = filtered.map(previewItemFromWork).filter((item) => item.url);
     if (!items.length) return;
     const index = Math.max(0, items.findIndex((item) => item.url === safeMediaUrl(work.url)));
     openMediaPreview({ items, index });
@@ -2992,9 +3621,25 @@ function handleWorkAction(event) {
 $('#video-result')?.addEventListener('click', (event) => {
   if (event.target.closest('[data-print-action]')) { handlePrintAction(event); return; }
   const button = event.target.closest('[data-video-action]');
-  if (!button || !videoJob?.url) return;
-  if (button.dataset.videoAction === 'copy') copyText(videoJob.url);
-  if (button.dataset.videoAction === 'download') downloadAsset(videoJob.url, 'agnes-video.mp4', 'video');
+  if (button && videoJob?.url) {
+    if (button.dataset.videoAction === 'preview') {
+      openMediaPreview({
+        items: [{
+          url: safeMediaUrl(videoJob.url),
+          title: 'Agnes 生成视频',
+          meta: `${videoJob.size || ''} / ${videoJob.seconds || ''} 秒`.replace(/^\/\s*/, ''),
+          kind: 'video',
+          prompt: videoJob.prompt || '',
+          generation: videoJob.generation || null,
+          createdAt: videoJob.createdAt || null
+        }],
+        returnFocus: button
+      });
+    }
+    if (button.dataset.videoAction === 'copy') copyText(videoJob.url);
+    if (button.dataset.videoAction === 'download') downloadAsset(videoJob.url, 'agnes-video.mp4', 'video');
+    return;
+  }
 });
 
 async function copyText(value) {

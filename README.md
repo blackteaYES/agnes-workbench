@@ -17,7 +17,7 @@
 uv run python -m http.server 4173
 ```
 
-打开 `http://127.0.0.1:4173/index.html`，在「API 密钥」弹窗中填入 Agnes API Key（仅保存在本地 localStorage，以 `Authorization: Bearer` 发送请求）。
+打开 `http://127.0.0.1:4173/index.html`，在「连接设置」中选择国际站、国内站或自定义 Base URL，并填入共享的 Agnes API Key（仅保存在本地 localStorage，以 `Authorization: Bearer` 发送请求）。
 
 ## 测试
 
@@ -31,6 +31,6 @@ uv run python tests/agnes_workbench_smoke.py
 
 ## 技术要点
 
-- API 基础 URL：`https://apihub.agnes-ai.com`；模型 `agnes-2.5-flash` / `agnes-image-2.1-flash` / `agnes-video-v2.0`；密钥 localStorage 键 `agnes-workbench.api-key`。
+- API 站点：国际站 `https://apihub.agnes-ai.com`（默认）、国内站 `https://apihub.agnes-ai.cn`，也支持自定义 Base URL；模型 `agnes-2.5-flash` / `agnes-image-2.1-flash` / `agnes-video-v2.0`；密钥 localStorage 键 `agnes-workbench.api-key`。
 - 全部代码集中在 `index.html` + `app.js` + `styles.css`，无第三方框架；lucide 图标来自 CDN。
 - 界面文案与代码注释均为 zh-CN。

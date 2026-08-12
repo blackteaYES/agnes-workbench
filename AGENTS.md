@@ -26,3 +26,5 @@
 - **API 接线**（app.js:3-20）：对话使用 POST `/v1/chat/completions`，采用 OpenAI 风格的分块 SSE（content + `reasoning_content`）；图像使用 POST `/v1/images/generations`，参考图放在 `extra_body.image` 下，优先使用 `response_format: 'url'`；视频使用 POST `/v1/videos`（按时长预设写入 `num_frames`），然后轮询 GET `/agnesapi?video_id=...`。基础 URL 为 `https://apihub.agnes-ai.com`。认证方式为 `Authorization: Bearer <key>`，密钥来自 localStorage。
 - **localStorage 键：** API 密钥 `agnes-workbench.api-key`；完整应用状态 `agnes-workbench.v1`。作品历史只保存媒体 URL + 提示词/元数据，绝不保存密钥。
 - 根目录 `.gitignore` 忽略 `.opencode/`（opencode 自身配置：插件依赖 + superdesign UI 技能）、`.venv/`、`tests/`——不要整体照搬 `.opencode/skill` 中的 CSS 建议；本应用在 `styles.css` 中有自己的设计体系。
+
+暂时不要冒烟测试了，告诉我让我进行自测
