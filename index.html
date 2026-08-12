@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#111414">
     <meta name="description" content="Agnes 创作工作台">
-    <title>Agnes 创作工作台 v2.20.5</title>
+    <title>Agnes 创作工作台 v2.20.6</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=2.20.5">
+    <link rel="stylesheet" href="styles.css?v=2.20.6">
     <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-    <script defer src="app.js?v=2.20.5"></script>
+    <script defer src="app.js?v=2.20.6"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -336,7 +336,12 @@
                   <div class="section-kicker"><span class="signal-line is-lime"></span> 作品记录</div>
                   <h1>留住已经发生的画面。</h1>
                 </div>
-                <button class="text-button danger-button" type="button" id="clear-works"><i data-lucide="trash-2" aria-hidden="true"></i>清除作品</button>
+                <div class="works-heading-actions">
+                  <button class="text-button" type="button" id="export-works"><i data-lucide="download" aria-hidden="true"></i>导出备份</button>
+                  <button class="text-button" type="button" id="import-works"><i data-lucide="upload" aria-hidden="true"></i>导入备份</button>
+                  <button class="text-button danger-button" type="button" id="clear-works"><i data-lucide="trash-2" aria-hidden="true"></i>清除作品</button>
+                  <input id="works-import-input" type="file" accept=".json,.agnes-workbench.json,application/json" hidden>
+                </div>
               </div>
               <div class="works-toolbar">
                 <div class="filter-tabs" role="tablist" aria-label="作品筛选">
@@ -344,7 +349,7 @@
                   <button class="filter-tab" type="button" data-work-filter="image">图像 <span id="image-work-count">0</span></button>
                   <button class="filter-tab" type="button" data-work-filter="video">视频 <span id="video-work-count">0</span></button>
                 </div>
-                <span class="mono works-storage-label">浏览器存储 / 仅保存 URL</span>
+                <span class="mono works-storage-label">可导出备份 / 仅保存媒体地址</span>
               </div>
               <div class="works-grid" id="works-grid"></div>
             </section>
@@ -477,7 +482,7 @@
                 <div class="works-stat-row"><span>视频</span><strong id="inspector-video-total">0</strong></div>
               </div>
               <div class="inspector-section">
-                <div class="storage-note"><i data-lucide="database" aria-hidden="true"></i><span>仅保存媒体 URL、提示词摘要和生成元数据。</span></div>
+                <div class="storage-note"><i data-lucide="database" aria-hidden="true"></i><span>作品备份保存提示词、生成参数和媒体 URL，不包含 API 密钥或媒体文件。</span></div>
               </div>
               <div class="inspector-footnote"><i data-lucide="lock" aria-hidden="true"></i><span>API 密钥不进入作品记录</span></div>
             </div>

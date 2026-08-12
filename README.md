@@ -8,6 +8,7 @@
 - **图像生成** — 文生图 / 图生图 / 多图合成，风格预设、提示词工作台（随机灵感 / 优化提示词）、输出档位与宽高比可调，参考图可从本地或作品库选择并长按拖拽排序。
 - **视频生成** — 文生视频 / 图生视频 / 关键帧动画，关键帧可拖动调整顺序，异步任务 + 智能轮询（含限流退避），可手动刷新状态。
 - **作品历史** — 仅保存媒体 URL、提示词摘要与元数据到浏览器 localStorage，绝不保存 API 密钥；图片和视频预览支持左右切换，视频进入预览后自动播放。
+- **作品备份** — 可将全部作品导出为版本化 `.agnes-workbench.json` 清单，并在预览校验后合并导入；按媒体类型与 URL 去重，作品上限仍为 40 条。
 
 ## 运行
 
@@ -32,5 +33,6 @@ uv run python tests/agnes_workbench_smoke.py
 ## 技术要点
 
 - API 站点：国际站 `https://apihub.agnes-ai.com`（默认）、国内站 `https://apihub.agnes-ai.cn`，也支持自定义 Base URL；模型 `agnes-2.5-flash` / `agnes-image-2.1-flash` / `agnes-video-v2.0`；密钥 localStorage 键 `agnes-workbench.api-key`。
+- 作品备份只包含媒体 URL、提示词、生成参数、类型和时间，不包含图片或视频文件；远程媒体地址失效后无法通过备份文件恢复媒体内容。
 - 全部代码集中在 `index.html` + `app.js` + `styles.css`，无第三方框架；lucide 图标来自 CDN。
 - 界面文案与代码注释均为 zh-CN。

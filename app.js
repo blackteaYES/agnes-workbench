@@ -56,6 +56,15 @@ const VIDEO_DIMENSIONS = {
 
 const IMAGE_MODE_LABELS = { text: '文生图', image: '图生图', composite: '多图合成' };
 const VIDEO_MODE_LABELS = { text: '文生视频', image: '图生视频', keyframes: '关键帧动画' };
+const WORKS_BACKUP_FORMAT = 'agnes-workbench-works';
+const WORKS_BACKUP_VERSION = 1;
+const WORKS_IMPORT_MAX_BYTES = 5 * 1024 * 1024;
+const WORKS_LIMIT = 40;
+const WORK_GENERATION_FIELDS = [
+  'model', 'mode', 'modeLabel', 'size', 'ratio', 'stylePreset', 'styleLabel',
+  'referenceCount', 'responseFormat', 'createdAt', 'width', 'height', 'duration',
+  'seconds', 'frames', 'frameRate', 'negativePrompt', 'seed'
+];
 
 const IMAGE_STYLE_PRESETS = {
   none: { label: '自由发挥', prompt: '' },
@@ -1448,6 +1457,9 @@ function bindEvents() {
   });
 
   $$('.filter-tab').forEach((button) => button.addEventListener('click', () => { activeWorkFilter = button.dataset.workFilter; renderWorks(); }));
+  $('#export-works').addEventListener('click', downloadWorksBackup);
+  $('#import-works').addEventListener('click', () => $('#works-import-input').click());
+  $('#works-import-input').addEventListener('change', openWorksImport);
   $('#clear-works').addEventListener('click', () => showConfirmModal({
     title: '清除作品记录',
     message: '作品库中的所有记录（仅保存的 URL 与元数据）将被移除，且无法撤销。',
@@ -3589,9 +3601,213 @@ function waitForVideoPoll(milliseconds, signal) {
 }
 
 function addWork(record) {
-  state.works = [{ id: createId('work'), ...record }, ...state.works].slice(0, 40);
+  state.works = [{ id: createId('work'), ...record }, ...state.works].slice(0, WORKS_LIMIT);
   saveState();
   renderWorks();
+}
+
+function normalizeWorkGeneration(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const generation = {};
+  WORK_GENERATION_FIELDS.forEach((key) => {
+    const field = value[key];
+    if (typeof field === 'string') generation[key] = field.slice(0, key === 'negativePrompt' ? 10000 : 1000);
+    else if (typeof field === 'number' && Number.isFinite(field)) generation[key] = field;
+    else if (typeof field === 'boolean') generation[key] = field;
+  });
+  return Object.keys(generation).length ? generation : null;
+}
+
+function createWorksBackupPayload() {
+  const works = [...state.works]
+    .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+    .map((work) => {
+      const url = safeMediaUrl(work.url);
+      if (!['image', 'video'].includes(work.kind) || !/^https?:/i.test(url)) return null;
+      return {
+        id: String(work.id || ''),
+        kind: work.kind,
+        title: String(work.title || ''),
+        prompt: String(work.prompt || ''),
+        url,
+        meta: String(work.meta || ''),
+        generation: normalizeWorkGeneration(work.generation),
+        createdAt: Number.isFinite(Number(work.createdAt)) ? Number(work.createdAt) : null
+      };
+    })
+    .filter(Boolean);
+  return { format: WORKS_BACKUP_FORMAT, version: WORKS_BACKUP_VERSION, exportedAt: new Date().toISOString(), works };
+}
+
+function worksBackupFilename(date = new Date()) {
+  const part = (value) => String(value).padStart(2, '0');
+  return `agnes-works-${date.getFullYear()}${part(date.getMonth() + 1)}${part(date.getDate())}-${part(date.getHours())}${part(date.getMinutes())}${part(date.getSeconds())}.agnes-workbench.json`;
+}
+
+async function downloadWorksBackup() {
+  const payload = createWorksBackupPayload();
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+  try {
+    await saveBlob(blob, worksBackupFilename());
+    showToast(`作品备份已导出，共 ${payload.works.length} 条。`);
+  } catch (error) {
+    if (error.name !== 'AbortError') showToast('作品备份导出失败。', 'error');
+  }
+}
+
+function normalizeImportedWork(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const kind = value.kind === 'image' || value.kind === 'video' ? value.kind : '';
+  const url = safeMediaUrl(typeof value.url === 'string' ? value.url.trim() : '');
+  if (!kind || !/^https?:/i.test(url)) return null;
+  const createdAtValue = Number(value.createdAt);
+  const title = String(value.title || '').trim();
+  return {
+    kind,
+    title: (title || (kind === 'video' ? '导入视频作品' : '导入图像作品')).slice(0, 240),
+    prompt: String(value.prompt || '').slice(0, 20000),
+    url,
+    meta: String(value.meta || '').trim().slice(0, 2000),
+    generation: normalizeWorkGeneration(value.generation),
+    createdAt: Number.isFinite(createdAtValue) && createdAtValue > 0 ? createdAtValue : Date.now()
+  };
+}
+
+function importedWorkKey(work) {
+  return `${work.kind}|${work.url}`;
+}
+
+function analyzeImportedWorks(records) {
+  const unique = new Map();
+  let internalDuplicates = 0;
+  records.forEach((work) => {
+    const key = importedWorkKey(work);
+    const previous = unique.get(key);
+    if (previous) internalDuplicates += 1;
+    if (!previous || work.createdAt > previous.createdAt) unique.set(key, work);
+  });
+  const currentKeys = new Set(state.works.map((work) => {
+    const url = safeMediaUrl(work.url);
+    return url ? `${work.kind}|${url}` : '';
+  }).filter(Boolean));
+  const uniqueRecords = [...unique.values()].sort((a, b) => b.createdAt - a.createdAt);
+  const currentDuplicates = uniqueRecords.filter((work) => currentKeys.has(importedWorkKey(work))).length;
+  const candidates = uniqueRecords.filter((work) => !currentKeys.has(importedWorkKey(work)));
+  const available = Math.max(0, WORKS_LIMIT - state.works.length);
+  const additions = candidates.slice(0, available);
+  return {
+    additions,
+    internalDuplicates,
+    currentDuplicates,
+    truncated: Math.max(0, candidates.length - additions.length)
+  };
+}
+
+async function parseWorksBackup(file) {
+  if (!file) throw new Error('请选择作品备份文件。');
+  if (!file.size) throw new Error('备份文件为空。');
+  if (file.size > WORKS_IMPORT_MAX_BYTES) throw new Error('备份文件不能超过 5MB。');
+  let payload;
+  try {
+    payload = JSON.parse(await file.text());
+  } catch (error) {
+    throw new Error('备份文件不是有效的 JSON。');
+  }
+  if (payload?.format !== WORKS_BACKUP_FORMAT) throw new Error('这不是 Agnes 作品备份文件。');
+  if (!Number.isInteger(payload.version) || payload.version !== WORKS_BACKUP_VERSION) throw new Error(`暂不支持这个备份版本（当前支持版本 ${WORKS_BACKUP_VERSION}）。`);
+  if (!Array.isArray(payload.works)) throw new Error('备份文件缺少作品列表。');
+  const normalized = payload.works.map(normalizeImportedWork);
+  const records = normalized.filter(Boolean);
+  if (!records.length && payload.works.length) throw new Error('备份中没有可导入的有效作品。');
+  const analysis = analyzeImportedWorks(records);
+  return {
+    fileName: file.name,
+    exportedAt: typeof payload.exportedAt === 'string' && Number.isFinite(Date.parse(payload.exportedAt)) ? payload.exportedAt : '',
+    total: payload.works.length,
+    valid: records.length,
+    invalid: payload.works.length - records.length,
+    records,
+    ...analysis
+  };
+}
+
+function mergeImportedWorks(records) {
+  const analysis = analyzeImportedWorks(records);
+  const imported = analysis.additions.map((work) => ({ id: createId('work'), ...work }));
+  if (imported.length) {
+    state.works = [...state.works, ...imported].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+    saveState();
+    renderWorks();
+  }
+  return { imported: imported.length, truncated: analysis.truncated };
+}
+
+function showWorksImportPreview(summary, onConfirm) {
+  $('#works-import-preview')?.remove();
+  const returnFocus = $('#import-works');
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.id = 'works-import-preview';
+  const exportedAt = summary.exportedAt ? formatFullDate(Date.parse(summary.exportedAt)) : '未提供';
+  backdrop.innerHTML = `
+    <section class="modal-panel works-import-panel" role="dialog" aria-modal="true" aria-labelledby="works-import-title">
+      <div class="modal-topline">
+        <span class="section-kicker"><span class="signal-line is-lime"></span> 作品恢复</span>
+        <button class="icon-button small" type="button" data-works-import-action="close" aria-label="关闭导入预览" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
+      </div>
+      <h2 id="works-import-title">确认导入作品备份</h2>
+      <div class="works-import-file"><i data-lucide="file-json" aria-hidden="true"></i><div><strong title="${escapeHtml(summary.fileName)}">${escapeHtml(summary.fileName)}</strong><small>导出时间：${escapeHtml(exportedAt)}</small></div></div>
+      <div class="works-import-stats" aria-label="导入统计">
+        <div><small>文件记录</small><strong>${summary.total}</strong></div>
+        <div><small>有效记录</small><strong>${summary.valid}</strong></div>
+        <div><small>无效记录</small><strong>${summary.invalid}</strong></div>
+        <div><small>当前重复</small><strong>${summary.currentDuplicates}</strong></div>
+        <div><small>实际新增</small><strong>${summary.additions.length}</strong></div>
+        <div><small>超限截去</small><strong>${summary.truncated}</strong></div>
+      </div>
+      ${summary.internalDuplicates ? `<p class="works-import-note">文件内部发现 ${summary.internalDuplicates} 条重复记录，已保留创建时间较新的版本。</p>` : ''}
+      <div class="modal-warning"><i data-lucide="triangle-alert" aria-hidden="true"></i><span>备份不包含图片或视频文件，媒体地址失效后无法通过该文件恢复媒体。</span></div>
+      <div class="modal-actions"><button class="text-button" type="button" data-works-import-action="close"><i data-lucide="x" aria-hidden="true"></i>取消</button><button class="primary-action" type="button" data-works-import-action="confirm" ${summary.additions.length ? '' : 'disabled'}><i data-lucide="upload" aria-hidden="true"></i>确认导入</button></div>
+    </section>`;
+  document.body.appendChild(backdrop);
+  refreshIcons();
+  syncOverlayState();
+  const panel = backdrop.querySelector('.works-import-panel');
+  const close = () => {
+    document.removeEventListener('keydown', onKeys, true);
+    backdrop.remove();
+    syncOverlayState();
+    if (returnFocus?.isConnected) window.requestAnimationFrame(() => returnFocus.focus());
+  };
+  const onKeys = (event) => {
+    if (event.key === 'Escape') { event.stopPropagation(); close(); return; }
+    trapFocus(event, panel);
+  };
+  backdrop.addEventListener('click', (event) => {
+    if (event.target === backdrop || event.target.closest('[data-works-import-action="close"]')) { close(); return; }
+    if (!event.target.closest('[data-works-import-action="confirm"]')) return;
+    close();
+    onConfirm?.();
+  });
+  document.addEventListener('keydown', onKeys, true);
+  window.requestAnimationFrame(() => backdrop.querySelector('[data-works-import-action="confirm"]:not([disabled]), [data-works-import-action="close"]')?.focus());
+}
+
+async function openWorksImport(event) {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (!file) return;
+  try {
+    const summary = await parseWorksBackup(file);
+    showWorksImportPreview(summary, () => {
+      const result = mergeImportedWorks(summary.records);
+      if (!result.imported) { showToast('没有可新增的作品记录。', 'error'); return; }
+      const suffix = result.truncated ? `，另有 ${result.truncated} 条因作品上限未导入` : '';
+      showToast(`已导入 ${result.imported} 条作品${suffix}。`);
+    });
+  } catch (error) {
+    showToast(error.message || '作品备份导入失败。', 'error');
+  }
 }
 
 function renderWorks() {
@@ -3618,7 +3834,22 @@ function renderWorks() {
     const media = url ? (isVideo ? `<video muted preload="metadata" src="${escapeHtml(url)}"></video>` : `<img src="${escapeHtml(url)}" alt="${escapeHtml(work.title)}">`) : '<div class="output-empty"><i data-lucide="image-off" aria-hidden="true"></i></div>';
     return `<article class="work-card" data-work-id="${work.id}"><div class="work-card-media">${media}<span class="work-card-type"><i data-lucide="${isVideo ? 'clapperboard' : 'image'}" aria-hidden="true"></i>${isVideo ? '视频' : '图像'}</span></div><div class="work-card-body"><div class="work-card-title" title="${escapeHtml(work.title)}">${escapeHtml(work.title)}</div><div class="work-card-meta"><span>${escapeHtml(work.meta || '--')}</span><span>${formatDate(work.createdAt)}</span></div><div class="work-card-actions"><button type="button" data-work-action="open" data-work-id="${work.id}"><i data-lucide="external-link" aria-hidden="true"></i>打开</button><button type="button" data-work-action="download" data-work-id="${work.id}"><i data-lucide="download" aria-hidden="true"></i>下载</button><button type="button" data-work-action="delete" data-work-id="${work.id}" aria-label="删除作品" data-tooltip="删除作品"><i data-lucide="trash-2" aria-hidden="true"></i></button></div></div></article>`;
   }).join('');
+  prepareWorkMedia();
   refreshIcons();
+}
+
+function prepareWorkMedia() {
+  $$('#works-grid .work-card-media img, #works-grid .work-card-media video').forEach((media) => {
+    const showUnavailable = () => {
+      const container = media.closest('.work-card-media');
+      if (!container || container.querySelector('.work-media-unavailable')) return;
+      media.hidden = true;
+      container.insertAdjacentHTML('afterbegin', '<div class="work-media-unavailable"><i data-lucide="image-off" aria-hidden="true"></i><span>媒体不可用</span></div>');
+      refreshIcons();
+    };
+    media.addEventListener('error', showUnavailable, { once: true });
+    if (media instanceof HTMLImageElement && media.complete && !media.naturalWidth) showUnavailable();
+  });
 }
 
 function clearWorks() {
@@ -3744,7 +3975,7 @@ async function saveBlob(blob, filename) {
       await writable.close();
       return;
     } catch (error) {
-      if (error.name === 'AbortError') return;
+      if (error.name === 'AbortError') throw error;
     }
   }
   const objectUrl = URL.createObjectURL(blob);
