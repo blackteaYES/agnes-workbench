@@ -1843,7 +1843,35 @@ function isAcceptedImageSource(value) {
 }
 
 function imageLabelForMessage(message, imageUrl) {
-  return imageUrl.startsWith('data:image/') ? (message.imageName || '本地图片') : shortText(imageUrl, 54);
+  if (message.imageName) return message.imageName;
+  if (imageUrl.startsWith('data:image/')) return '本地图片';
+  try {
+    const pathName = new URL(imageUrl).pathname.split('/').filter(Boolean).pop();
+    return pathName ? shortText(decodeURIComponent(pathName), 54) : '对话图片';
+  } catch (error) {
+    return '对话图片';
+  }
+}
+
+function chatMessageImageMarkup(message, imageUrl) {
+  if (!imageUrl) return '';
+  const label = imageLabelForMessage(message, imageUrl);
+  return `<button class="message-image-preview" type="button" data-message-action="preview-image" data-message-id="${escapeHtml(message.id)}" aria-label="放大预览 ${escapeHtml(label)}"><img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(label)}" loading="lazy" decoding="async"><span class="message-image-error" hidden><i data-lucide="image-off" aria-hidden="true"></i><span>图片无法显示</span></span></button>`;
+}
+
+function prepareChatMessageImages(container) {
+  $$('.message-image-preview img', container).forEach((image) => {
+    const showError = () => {
+      const preview = image.closest('.message-image-preview');
+      if (!preview) return;
+      preview.classList.add('is-error');
+      image.hidden = true;
+      const error = $('.message-image-error', preview);
+      if (error) error.hidden = false;
+    };
+    image.addEventListener('error', showError, { once: true });
+    if (image.complete && !image.naturalWidth) showError();
+  });
 }
 
 function buildChatContent(text, imageUrl = '') {
@@ -1875,7 +1903,7 @@ function renderChat() {
     const imageUrl = contentImageUrl(message.content);
     const text = textFromChatContent(message.content);
     const isStreaming = Boolean(message.streaming);
-    const image = imageUrl ? `<div class="message-image-link"><i data-lucide="image" aria-hidden="true"></i><span>${escapeHtml(imageLabelForMessage(message, imageUrl))}</span></div>` : '';
+    const image = chatMessageImageMarkup(message, imageUrl);
     const isEditing = user && editingMessageId === message.id;
     const actions = !isEditing && user
       ? `<div class="message-tools"><button type="button" data-message-action="edit" data-message-id="${message.id}"><i data-lucide="pencil" aria-hidden="true"></i>编辑</button></div>`
@@ -1893,6 +1921,7 @@ function renderChat() {
     const answer = user ? `<div class="message-content">${image}${escapeHtml(text)}</div>` : `${thinking}<div class="message-content${isStreaming ? ' is-streaming' : ''}" data-answer-content>${escapeHtml(text || (!isStreaming ? 'Agnes 没有返回文本内容。' : ''))}</div>`;
     return `<article class="message-row ${user ? 'user' : 'assistant'}${isEditing ? ' is-editing' : ''}" data-message-id="${message.id}" tabindex="0"><div class="message-avatar">${user ? '我' : 'AG'}</div><div class="message-body"><div class="message-meta"><span>${user ? '我' : 'AGNES'}</span><span>${formatDate(message.createdAt)}</span>${isStreaming ? '<span class="status-light is-live"></span>' : ''}</div>${editor || answer}${actions}</div></article>`;
   }).join('');
+  prepareChatMessageImages(container);
   refreshIcons();
   if (keepChatAtBottom) window.requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
 }
@@ -2049,6 +2078,7 @@ async function completeChat(session) {
 
 function handleMessageAction(event) {
   const button = event.target.closest('[data-message-action]');
+  if (button && event.type === 'keydown') return;
   if (!button) {
     const row = event.target.closest('.message-row');
     if (!row || event.target.closest('.message-edit-box')) return;
@@ -2060,6 +2090,20 @@ function handleMessageAction(event) {
   const session = getActiveSession();
   const message = session.messages.find((item) => item.id === button.dataset.messageId);
   if (!message) return;
+  if (button.dataset.messageAction === 'preview-image') {
+    const imageUrl = safeMediaUrl(contentImageUrl(message.content));
+    if (!imageUrl) { showToast('图片地址不可用。', 'error'); return; }
+    openMediaPreview({
+      items: [{
+        url: imageUrl,
+        title: imageLabelForMessage(message, imageUrl),
+        meta: '对话图片',
+        kind: 'image'
+      }],
+      returnFocus: button
+    });
+    return;
+  }
   if (button.dataset.messageAction === 'copy') copyText(textFromChatContent(message.content));
   if (button.dataset.messageAction === 'regenerate') regenerateMessage(message.id);
   if (button.dataset.messageAction === 'edit') beginEditMessage(message.id);
