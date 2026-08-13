@@ -12,7 +12,9 @@ const CONFIG = {
   },
   storage: {
     key: 'agnes-workbench.api-key',
-    state: 'agnes-workbench.v1'
+    state: 'agnes-workbench.v1',
+    database: 'agnes-workbench.storage',
+    databaseVersion: 2
   },
   timeouts: {
     chat: 120000,
@@ -60,6 +62,12 @@ const WORKS_BACKUP_FORMAT = 'agnes-workbench-works';
 const WORKS_BACKUP_VERSION = 1;
 const WORKS_IMPORT_MAX_BYTES = 5 * 1024 * 1024;
 const WORKS_LIMIT = 40;
+const CHAT_SESSION_LIMIT = 20;
+const LIGHTWEIGHT_STATE_VERSION = 3;
+const STORAGE_POLICY_LIMITS = {
+  sessions: { min: 5, max: 100 },
+  works: { min: 10, max: 100 }
+};
 const WORK_GENERATION_FIELDS = [
   'model', 'mode', 'modeLabel', 'size', 'ratio', 'stylePreset', 'styleLabel',
   'referenceCount', 'responseFormat', 'createdAt', 'width', 'height', 'duration',
@@ -111,9 +119,25 @@ const IMAGE_PROMPT_GUIDES = {
   }
 };
 
+const PROMPT_EXAMPLES_FALLBACK = {
+  version: 1,
+  textToImage: {
+    title: '给你的下一幅杰作，留一个位置。',
+    description: '选择一个模板作为起点，再在下方提示词调成你的表达。',
+    examples: [{
+      id: 'wedding-invitation',
+      title: '中式婚礼请柬',
+      image: 'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=720&q=82',
+      alt: '柔和编辑感的新娘肖像与婚礼请柬海报',
+      prompt: '创作一张具有柔和编辑感新娘肖像美学的精致奢华中式婚礼请柬海报。新人姓名：${Lin Zhao & Shen Zhiyi}。婚礼日期：${2026 年 5 月 20 日}。誓言短句：${我愿意，和你一起成为我们}。婚礼地点：${杭州 · 白塔公园}。仪式时间：${18:00}。新娘形象：${棕发柔和盘起、佩戴花朵珍珠耳饰、露肩并穿白色缎面礼服的新娘}。可见标题：${WEDDING DAY}。仪式文字：${宜｜嫁娶}。花束：${粉紫色花束}。配色：${雾感浅灰、象牙白、粉紫与白色}。采用方形构图与优雅留白，背景使用所选配色，并带细微胶片颗粒薄雾。将所选新娘放在右侧三分之一处，裁切为从额头到下颌的侧脸。左侧与中央留给排版，左下加入虚化深灰前景阴影，右下加入柔焦的所选花束。准确使用七组白色文字：所选日期的大写英文格式；所选誓言短句；所选可见标题；同一所选日期的数字格式；所选仪式文字；所选新人姓名；所选婚礼地点与仪式时间。使用高级浪漫纸品、电影柔焦、明亮自然窗光、低反差、奶油白、暖肤色、细腻散景和克制奢华。避免边框、额外 Logo、水印和多余文字。'
+    }]
+  }
+};
+
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
+let loadedStateHadMessages = false;
 let state = loadState();
 let apiKey = readStoredKey();
 let connectionStatus = 'idle';
@@ -142,6 +166,28 @@ const promptAssistStates = {
 let imageActivePrompt = null;
 let promptPrintStates = { image: null, video: null };
 let toastTimer = 0;
+let storageRepository = null;
+let storageReady = false;
+let storageMigrationLocked = false;
+let storageWarningShown = false;
+let lightweightStorageWarningShown = false;
+let lightweightSaveTimer = 0;
+const sessionSaveTimers = new Map();
+const sessionWriteQueues = new Map();
+const startupNotices = [];
+const workMediaRuntime = new Map();
+const workMediaObjectUrls = new Map();
+const workCacheJobs = new Map();
+const workCacheSuppressed = new Set();
+let promptExamples = null;
+let promptShowcaseCollapsed = false;
+let selectedPromptExampleId = '';
+let storageHealthReport = null;
+let storageEngineState = 'checking';
+let workBackfillStarted = false;
+let workBackfillPromise = null;
+let settingsReturnFocus = null;
+let settingsKeyHandler = null;
 
 class AgnesApiError extends Error {
   constructor(message, status = 0, payload = null, retryAfter = 0) {
@@ -159,11 +205,13 @@ function defaultState() {
     activeChatId: null,
     chatSessions: [],
     works: [],
-    connection: { endpoint: 'international', customBaseUrl: '' },
+    connection: { endpoint: 'international', customBaseUrl: '', lastVerifiedAt: 0 },
     ui: {
       chat: { temperature: 0.7, maxTokens: 2048, thinking: false, autoFullscreen: true },
       image: { mode: 'text', size: '2K', ratio: '1:1', stylePreset: 'none', keywordDirection: '' },
       video: { mode: 'text', duration: '5', ratio: '16:9', frameRate: '24', negativePrompt: '', seed: '', stylePreset: 'none', keywordDirection: '' },
+      general: { theme: 'system', density: 'comfortable', reducedMotion: false, autoSaveProfile: 'standard' },
+      storage: { cacheImages: true, sessionRetention: CHAT_SESSION_LIMIT, workRetention: WORKS_LIMIT },
       layout: { sidebarCollapsed: true, inspectorCollapsed: true },
       workPickerAnimation: 'bounce'
     }
@@ -180,11 +228,30 @@ function loadState() {
     next.ui.chat = { ...fallback.ui.chat, ...(next.ui.chat || {}) };
     next.ui.image = { ...fallback.ui.image, ...(next.ui.image || {}) };
     next.ui.video = { ...fallback.ui.video, ...(next.ui.video || {}) };
+    next.ui.general = { ...fallback.ui.general, ...(next.ui.general || {}) };
+    next.ui.storage = { ...fallback.ui.storage, ...(next.ui.storage || {}) };
     next.ui.layout = { ...fallback.ui.layout, ...(next.ui.layout || {}) };
     next.chatSessions = Array.isArray(next.chatSessions) ? next.chatSessions : [];
+    loadedStateHadMessages = next.chatSessions.some((session) => Array.isArray(session?.messages));
+    next.chatSessions = next.chatSessions.map((session) => {
+      const hasMessages = Array.isArray(session.messages);
+      return {
+        ...session,
+        messages: hasMessages ? session.messages : [],
+        messageCount: Number.isFinite(Number(session.messageCount)) ? Number(session.messageCount) : (hasMessages ? session.messages.length : 0),
+        _messagesLoaded: hasMessages
+      };
+    });
     next.works = Array.isArray(next.works) ? next.works : [];
     next.connection.endpoint = ['international', 'china', 'custom'].includes(next.connection.endpoint) ? next.connection.endpoint : 'international';
     next.connection.customBaseUrl = typeof next.connection.customBaseUrl === 'string' ? next.connection.customBaseUrl : '';
+    next.connection.lastVerifiedAt = Number.isFinite(Number(next.connection.lastVerifiedAt)) ? Number(next.connection.lastVerifiedAt) : 0;
+    next.ui.general.theme = ['dark', 'light', 'system'].includes(next.ui.general.theme) ? next.ui.general.theme : 'dark';
+    next.ui.general.density = next.ui.general.density === 'compact' ? 'compact' : 'comfortable';
+    next.ui.general.autoSaveProfile = next.ui.general.autoSaveProfile === 'low' ? 'low' : 'standard';
+    next.ui.storage.cacheImages = next.ui.storage.cacheImages !== false;
+    next.ui.storage.sessionRetention = normalizeRetention(next.ui.storage.sessionRetention, 'sessions');
+    next.ui.storage.workRetention = normalizeRetention(next.ui.storage.workRetention, 'works');
     if (next.connection.endpoint === 'custom' && next.connection.customBaseUrl) {
       try { next.connection.customBaseUrl = normalizeCustomBaseUrl(next.connection.customBaseUrl); } catch (error) { next.connection = { endpoint: 'international', customBaseUrl: '' }; }
     }
@@ -195,12 +262,750 @@ function loadState() {
   }
 }
 
-function saveState() {
+function chatSessionMetadata(session) {
+  return {
+    id: session.id,
+    title: String(session.title || '新会话'),
+    createdAt: Number(session.createdAt || Date.now()),
+    updatedAt: Number(session.updatedAt || session.createdAt || Date.now()),
+    messageCount: session._messagesLoaded === false ? Number(session.messageCount || 0) : (Array.isArray(session.messages) ? session.messages.length : Number(session.messageCount || 0))
+  };
+}
+
+function lightweightStateSnapshot() {
+  return {
+    storageVersion: LIGHTWEIGHT_STATE_VERSION,
+    activeMode: state.activeMode,
+    activeChatId: state.activeChatId,
+    connection: state.connection,
+    ui: state.ui,
+    chatSessions: state.chatSessions.map(chatSessionMetadata),
+    works: state.works
+  };
+}
+
+function writeLightweightState() {
+  window.clearTimeout(lightweightSaveTimer);
+  lightweightSaveTimer = 0;
   try {
-    localStorage.setItem(CONFIG.storage.state, JSON.stringify(state));
+    localStorage.setItem(CONFIG.storage.state, JSON.stringify(lightweightStateSnapshot()));
   } catch (error) {
-    showToast('浏览器存储空间不足，已保留当前页面状态。', 'error');
+    if (!lightweightStorageWarningShown) {
+      lightweightStorageWarningShown = true;
+      showToast('界面设置无法写入浏览器存储，请检查隐私设置或可用空间。', 'error');
+    }
   }
+}
+
+function saveState({ immediate = false } = {}) {
+  if (storageMigrationLocked) return;
+  if (immediate) { writeLightweightState(); return; }
+  window.clearTimeout(lightweightSaveTimer);
+  lightweightSaveTimer = window.setTimeout(writeLightweightState, getStateSaveDelay());
+}
+
+function getStateSaveDelay() {
+  return state.ui.general.autoSaveProfile === 'low' ? 2400 : 360;
+}
+
+function getSessionSaveDelay() {
+  return state.ui.general.autoSaveProfile === 'low' ? 2800 : 420;
+}
+
+function normalizeRetention(value, kind) {
+  const limits = STORAGE_POLICY_LIMITS[kind];
+  const fallback = kind === 'sessions' ? CHAT_SESSION_LIMIT : WORKS_LIMIT;
+  const numeric = Math.round(Number(value));
+  return Number.isFinite(numeric) ? Math.min(limits.max, Math.max(limits.min, numeric)) : fallback;
+}
+
+function getStoragePolicy() {
+  return {
+    cacheImages: state.ui.storage.cacheImages !== false,
+    sessionRetention: normalizeRetention(state.ui.storage.sessionRetention, 'sessions'),
+    workRetention: normalizeRetention(state.ui.storage.workRetention, 'works')
+  };
+}
+
+function saveStoragePolicy(next = {}) {
+  state.ui.storage = { ...state.ui.storage, ...getStoragePolicy(), ...next };
+  state.ui.storage.sessionRetention = normalizeRetention(state.ui.storage.sessionRetention, 'sessions');
+  state.ui.storage.workRetention = normalizeRetention(state.ui.storage.workRetention, 'works');
+  saveState();
+}
+
+function idbRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.addEventListener('success', () => resolve(request.result), { once: true });
+    request.addEventListener('error', () => reject(request.error || new Error('IndexedDB 请求失败。')), { once: true });
+  });
+}
+
+function idbTransactionDone(transaction) {
+  return new Promise((resolve, reject) => {
+    transaction.addEventListener('complete', resolve, { once: true });
+    transaction.addEventListener('abort', () => reject(transaction.error || new Error('IndexedDB 事务已中止。')), { once: true });
+    transaction.addEventListener('error', () => reject(transaction.error || new Error('IndexedDB 事务失败。')), { once: true });
+  });
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('无法读取本地图片附件。'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function dataUrlToBlob(value) {
+  const response = await fetch(value);
+  if (!response.ok) throw new Error('无法转换旧版对话图片。');
+  return response.blob();
+}
+
+function isSvgFile(file) {
+  return Boolean(file && (String(file.type || '').toLowerCase() === 'image/svg+xml' || /\.svg$/i.test(file.name || '')));
+}
+
+function isImageFile(file) {
+  return Boolean(file && (String(file.type || '').toLowerCase().startsWith('image/') || isSvgFile(file)));
+}
+
+function isImageDataUrl(value) {
+  return typeof value === 'string' && /^data:image\/[a-z0-9.+-]+(?:;[^,]*)?,/i.test(value);
+}
+
+function persistedMessageCopy(message) {
+  const copy = { ...message };
+  delete copy.streaming;
+  delete copy.error;
+  return copy;
+}
+
+async function serializeMessageForStorage(message, blobs) {
+  const copy = persistedMessageCopy(message);
+  if (!Array.isArray(copy.content)) return copy;
+  copy.content = await Promise.all(copy.content.map(async (part) => {
+    if (part?.type !== 'image_url') return { ...part };
+    const source = part.image_url || {};
+    if (source.ref) {
+      return { type: 'image_url', image_url: { ref: source.ref, mimeType: source.mimeType || 'image/*' } };
+    }
+    const url = String(source.url || '');
+    if (!isImageDataUrl(url)) return { type: 'image_url', image_url: { url } };
+    const blob = await dataUrlToBlob(url);
+    const id = source.ref || `${message.id}-image`;
+    blobs.push({ id, blob, mimeType: blob.type || 'image/*', size: blob.size, createdAt: Date.now(), name: message.imageName || '对话图片' });
+    return { type: 'image_url', image_url: { ref: id, mimeType: blob.type || 'image/*' } };
+  }));
+  return copy;
+}
+
+async function hydrateStoredMessage(message, blobMap) {
+  const copy = { ...message };
+  if (!Array.isArray(copy.content)) return copy;
+  copy.content = await Promise.all(copy.content.map(async (part) => {
+    if (part?.type !== 'image_url' || !part.image_url?.ref) return { ...part, image_url: part?.image_url ? { ...part.image_url } : part?.image_url };
+    const record = blobMap.get(part.image_url.ref);
+    if (!record?.blob) return null;
+    return {
+      type: 'image_url',
+      image_url: {
+        url: await blobToDataUrl(record.blob),
+        ref: part.image_url.ref,
+        mimeType: part.image_url.mimeType || record.mimeType || record.blob.type || 'image/*'
+      }
+    };
+  }));
+  copy.content = copy.content.filter(Boolean);
+  return copy;
+}
+
+class StorageRepository {
+  constructor(database) {
+    this.database = database;
+  }
+
+  static open() {
+    return new Promise((resolve, reject) => {
+      if (!('indexedDB' in window)) { reject(new Error('当前浏览器不支持 IndexedDB。')); return; }
+      const request = indexedDB.open(CONFIG.storage.database, CONFIG.storage.databaseVersion);
+      request.addEventListener('upgradeneeded', () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains('sessions')) database.createObjectStore('sessions', { keyPath: 'id' });
+        if (!database.objectStoreNames.contains('messages')) {
+          const messages = database.createObjectStore('messages', { keyPath: 'id' });
+          messages.createIndex('sessionId', 'sessionId', { unique: false });
+        }
+        if (!database.objectStoreNames.contains('blobs')) database.createObjectStore('blobs', { keyPath: 'id' });
+        if (!database.objectStoreNames.contains('workMedia')) {
+          const workMedia = database.createObjectStore('workMedia', { keyPath: 'workId' });
+          workMedia.createIndex('kind', 'kind', { unique: false });
+          workMedia.createIndex('status', 'status', { unique: false });
+        }
+        if (!database.objectStoreNames.contains('meta')) database.createObjectStore('meta', { keyPath: 'key' });
+        request.transaction.objectStore('meta').put({
+          key: 'schema-migration',
+          databaseVersion: CONFIG.storage.databaseVersion,
+          previousVersion: request.oldVersion,
+          completedAt: Date.now()
+        });
+      });
+      request.addEventListener('success', () => resolve(new StorageRepository(request.result)), { once: true });
+      request.addEventListener('blocked', () => reject(new Error('IndexedDB 升级被其他页面阻止，请关闭旧页面后重试。')), { once: true });
+      request.addEventListener('error', () => reject(request.error || new Error('IndexedDB 无法打开。')), { once: true });
+    });
+  }
+
+  async prepareSession(session) {
+    const blobs = [];
+    const messages = [];
+    for (let index = 0; index < session.messages.length; index += 1) {
+      const message = await serializeMessageForStorage(session.messages[index], blobs);
+      messages.push({ id: message.id, sessionId: session.id, position: index, message });
+    }
+    return { metadata: chatSessionMetadata(session), messages, blobs };
+  }
+
+  async replaceSession(session) {
+    const prepared = await this.prepareSession(session);
+    const read = this.database.transaction('messages', 'readonly');
+    const readDone = idbTransactionDone(read);
+    const oldRecords = await idbRequest(read.objectStore('messages').index('sessionId').getAll(session.id));
+    await readDone;
+    const transaction = this.database.transaction(['sessions', 'messages', 'blobs'], 'readwrite');
+    const sessions = transaction.objectStore('sessions');
+    const messages = transaction.objectStore('messages');
+    const blobs = transaction.objectStore('blobs');
+    oldRecords.forEach((record) => messages.delete(record.id));
+    sessions.put(prepared.metadata);
+    prepared.messages.forEach((record) => messages.put(record));
+    prepared.blobs.forEach((record) => blobs.put(record));
+    await idbTransactionDone(transaction);
+  }
+
+  async migrateLegacy(sessions) {
+    const prepared = [];
+    for (const session of sessions) prepared.push(await this.prepareSession(session));
+    const transaction = this.database.transaction(['sessions', 'messages', 'blobs', 'meta'], 'readwrite');
+    const sessionStore = transaction.objectStore('sessions');
+    const messageStore = transaction.objectStore('messages');
+    const blobStore = transaction.objectStore('blobs');
+    prepared.forEach((item) => {
+      sessionStore.put(item.metadata);
+      item.messages.forEach((record) => messageStore.put(record));
+      item.blobs.forEach((record) => blobStore.put(record));
+    });
+    transaction.objectStore('meta').put({ key: 'legacy-migration', completedAt: Date.now(), storageVersion: LIGHTWEIGHT_STATE_VERSION });
+    await idbTransactionDone(transaction);
+  }
+
+  async getMeta(key) {
+    const transaction = this.database.transaction('meta', 'readonly');
+    const request = idbRequest(transaction.objectStore('meta').get(key));
+    const done = idbTransactionDone(transaction);
+    const value = await request;
+    await done;
+    return value || null;
+  }
+
+  async setMeta(value) {
+    const transaction = this.database.transaction('meta', 'readwrite');
+    transaction.objectStore('meta').put(value);
+    await idbTransactionDone(transaction);
+  }
+
+  async loadSessions(metadataList) {
+    const transaction = this.database.transaction(['sessions', 'messages', 'blobs'], 'readonly');
+    const done = idbTransactionDone(transaction);
+    const sessionRequest = idbRequest(transaction.objectStore('sessions').getAll());
+    const messageRequest = idbRequest(transaction.objectStore('messages').getAll());
+    const blobRequest = idbRequest(transaction.objectStore('blobs').getAll());
+    const [storedSessions, storedMessages, storedBlobs] = await Promise.all([sessionRequest, messageRequest, blobRequest]);
+    await done;
+    const metadata = new Map([...(metadataList || []), ...storedSessions].map((session) => [session.id, session]));
+    const bySession = new Map();
+    storedMessages.sort((a, b) => a.position - b.position).forEach((record) => {
+      if (!bySession.has(record.sessionId)) bySession.set(record.sessionId, []);
+      bySession.get(record.sessionId).push(record.message);
+    });
+    const blobMap = new Map(storedBlobs.map((record) => [record.id, record]));
+    const sessions = [];
+    for (const session of metadata.values()) {
+      const messages = [];
+      for (const message of bySession.get(session.id) || []) messages.push(await hydrateStoredMessage(message, blobMap));
+      sessions.push({ ...session, messages, messageCount: messages.length, _messagesLoaded: true });
+    }
+    return sessions.sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  }
+
+  async getCachedWorkMedia(workId) {
+    const transaction = this.database.transaction('workMedia', 'readonly');
+    const done = idbTransactionDone(transaction);
+    const record = await idbRequest(transaction.objectStore('workMedia').get(workId));
+    await done;
+    if (record?.status === 'ready') {
+      record.lastAccessedAt = Date.now();
+      const update = this.database.transaction('workMedia', 'readwrite');
+      update.objectStore('workMedia').put(record);
+      await idbTransactionDone(update);
+    }
+    return record || null;
+  }
+
+  async cacheWorkMedia(work, { signal, onProgress } = {}) {
+    const url = safeMediaUrl(work?.url);
+    if (!work?.id || !url) throw new Error('作品媒体地址不可用。');
+    if (signal?.aborted) throw new DOMException('缓存已取消。', 'AbortError');
+    const response = await fetch(url, { signal, mode: 'cors' });
+    if (!response.ok) throw new Error(`媒体请求失败（${response.status}）。`);
+    const total = Number(response.headers.get('content-length') || 0);
+    let blob;
+    if (response.body && total > 0) {
+      const reader = response.body.getReader();
+      const chunks = [];
+      let loaded = 0;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        loaded += value.byteLength;
+        onProgress?.(Math.min(100, Math.round(loaded / total * 100)));
+      }
+      blob = new Blob(chunks, { type: response.headers.get('content-type') || (work.kind === 'video' ? 'video/mp4' : 'image/*') });
+    } else {
+      blob = await response.blob();
+    }
+    const record = { workId: work.id, kind: work.kind, blob, mimeType: blob.type || (work.kind === 'video' ? 'video/mp4' : 'image/*'), size: blob.size, sourceUrl: url, cachedAt: Date.now(), lastAccessedAt: Date.now(), status: 'ready', error: '' };
+    const transaction = this.database.transaction('workMedia', 'readwrite');
+    transaction.objectStore('workMedia').put(record);
+    await idbTransactionDone(transaction);
+    return record;
+  }
+
+  async markWorkMediaFailed(work, error) {
+    if (!work?.id) return;
+    const transaction = this.database.transaction('workMedia', 'readwrite');
+    transaction.objectStore('workMedia').put({ workId: work.id, kind: work.kind, sourceUrl: safeMediaUrl(work.url), cachedAt: 0, lastAccessedAt: Date.now(), status: 'failed', error: String(error?.message || error || '缓存失败').slice(0, 300), size: 0, mimeType: '' });
+    await idbTransactionDone(transaction);
+  }
+
+  async deleteCachedWorkMedia(workId) {
+    const transaction = this.database.transaction('workMedia', 'readwrite');
+    transaction.objectStore('workMedia').delete(workId);
+    await idbTransactionDone(transaction);
+  }
+
+  async clearCachedWorkMedia({ kind = '', failedOnly = false } = {}) {
+    const read = this.database.transaction('workMedia', 'readonly');
+    const readDone = idbTransactionDone(read);
+    const records = await idbRequest(read.objectStore('workMedia').getAll());
+    await readDone;
+    const selected = records.filter((record) => (!kind || record.kind === kind) && (!failedOnly || record.status === 'failed'));
+    if (selected.length) {
+      const transaction = this.database.transaction('workMedia', 'readwrite');
+      selected.forEach((record) => transaction.objectStore('workMedia').delete(record.workId));
+      await idbTransactionDone(transaction);
+    }
+    return selected;
+  }
+
+  async getStorageSnapshot() {
+    const transaction = this.database.transaction(['sessions', 'messages', 'blobs', 'workMedia', 'meta'], 'readonly');
+    const done = idbTransactionDone(transaction);
+    const sessionsRequest = idbRequest(transaction.objectStore('sessions').getAll());
+    const messagesRequest = idbRequest(transaction.objectStore('messages').getAll());
+    const blobsRequest = idbRequest(transaction.objectStore('blobs').getAll());
+    const workMediaRequest = idbRequest(transaction.objectStore('workMedia').getAll());
+    const metaRequest = idbRequest(transaction.objectStore('meta').getAll());
+    const [sessions, messages, blobs, workMedia, meta] = await Promise.all([sessionsRequest, messagesRequest, blobsRequest, workMediaRequest, metaRequest]);
+    await done;
+    return { sessions, messages, blobs, workMedia, meta };
+  }
+
+  async checkStorageHealth() {
+    const snapshot = await this.getStorageSnapshot();
+    const requiredStores = ['sessions', 'messages', 'blobs', 'workMedia', 'meta'];
+    const missingStores = requiredStores.filter((name) => !this.database.objectStoreNames.contains(name));
+    const messageIndexMissing = !missingStores.includes('messages') && !this.database.transaction('messages', 'readonly').objectStore('messages').indexNames.contains('sessionId');
+    const sessionIds = new Set(snapshot.sessions.map((record) => record.id));
+    const workIds = new Set(state.works.map((work) => work.id));
+    const messageOrphans = snapshot.messages.filter((record) => !sessionIds.has(record.sessionId));
+    const blobRefs = new Set();
+    snapshot.messages.forEach((record) => {
+      if (!Array.isArray(record.message?.content)) return;
+      record.message.content.forEach((part) => { if (part?.image_url?.ref) blobRefs.add(part.image_url.ref); });
+    });
+    const blobIds = new Set(snapshot.blobs.map((record) => record.id));
+    const missingBlobRefs = [...blobRefs].filter((id) => !blobIds.has(id));
+    const blobOrphans = snapshot.blobs.filter((record) => !blobRefs.has(record.id));
+    const workMediaOrphans = snapshot.workMedia.filter((record) => !workIds.has(record.workId));
+    const workMediaMismatch = snapshot.workMedia.filter((record) => {
+      const work = state.works.find((item) => item.id === record.workId);
+      if (!work) return false;
+      const mimeType = String(record.mimeType || record.blob?.type || '').toLowerCase();
+      const declaredKind = mimeType.startsWith('image/') ? 'image' : mimeType.startsWith('video/') ? 'video' : '';
+      const typeMismatch = record.kind !== work.kind || (record.status === 'ready' && declaredKind && declaredKind !== work.kind);
+      return typeMismatch || safeMediaUrl(work.url) !== safeMediaUrl(record.sourceUrl);
+    });
+    const messageCounts = new Map();
+    snapshot.messages.forEach((record) => messageCounts.set(record.sessionId, (messageCounts.get(record.sessionId) || 0) + 1));
+    const sessionCountMismatch = snapshot.sessions.filter((record) => Number(record.messageCount || 0) !== Number(messageCounts.get(record.id) || 0));
+    const schemaMeta = snapshot.meta.find((record) => record.key === 'schema-migration');
+    const schemaMismatch = !schemaMeta || Number(schemaMeta.databaseVersion) !== CONFIG.storage.databaseVersion || this.database.version !== CONFIG.storage.databaseVersion;
+    const issueCount = missingStores.length + Number(messageIndexMissing) + messageOrphans.length + missingBlobRefs.length + blobOrphans.length + workMediaOrphans.length + workMediaMismatch.length + sessionCountMismatch.length + Number(schemaMismatch);
+    return { ok: issueCount === 0, issueCount, missingStores, messageIndexMissing, messageOrphans, missingBlobRefs, blobOrphans, workMediaOrphans, workMediaMismatch, sessionCountMismatch, schemaMismatch, snapshot };
+  }
+
+  async repairStorage() {
+    const health = await this.checkStorageHealth();
+    if (health.missingStores.length || health.messageIndexMissing) throw new Error('数据库结构不完整，需要刷新页面触发升级。');
+    const transaction = this.database.transaction(['sessions', 'messages', 'blobs', 'workMedia', 'meta'], 'readwrite');
+    const sessions = transaction.objectStore('sessions');
+    const messages = transaction.objectStore('messages');
+    health.messageOrphans.forEach((record) => messages.delete(record.id));
+    const missingRefs = new Set(health.missingBlobRefs);
+    health.snapshot.messages.forEach((record) => {
+      if (health.messageOrphans.some((orphan) => orphan.id === record.id) || !Array.isArray(record.message?.content)) return;
+      const content = record.message.content.filter((part) => !part?.image_url?.ref || !missingRefs.has(part.image_url.ref));
+      if (content.length !== record.message.content.length) messages.put({ ...record, message: { ...record.message, content } });
+    });
+    const blobs = transaction.objectStore('blobs');
+    health.blobOrphans.forEach((record) => blobs.delete(record.id));
+    const workMedia = transaction.objectStore('workMedia');
+    health.workMediaOrphans.forEach((record) => workMedia.delete(record.workId));
+    health.workMediaMismatch.forEach((record) => workMedia.delete(record.workId));
+    const validMessages = health.snapshot.messages.filter((record) => !health.messageOrphans.some((orphan) => orphan.id === record.id));
+    const messageCounts = new Map();
+    validMessages.forEach((record) => messageCounts.set(record.sessionId, (messageCounts.get(record.sessionId) || 0) + 1));
+    health.snapshot.sessions.forEach((record) => sessions.put({ ...record, messageCount: messageCounts.get(record.id) || 0 }));
+    transaction.objectStore('meta').put({ key: 'schema-migration', databaseVersion: CONFIG.storage.databaseVersion, previousVersion: CONFIG.storage.databaseVersion, completedAt: Date.now() });
+    await idbTransactionDone(transaction);
+    const releasedBytes = health.blobOrphans.reduce((total, record) => total + Number(record.size || record.blob?.size || 0), 0)
+      + [...health.workMediaOrphans, ...health.workMediaMismatch].reduce((total, record) => total + Number(record.size || record.blob?.size || 0), 0);
+    return { removedMessages: health.messageOrphans.length, removedBlobReferences: health.missingBlobRefs.length, removedBlobReferenceIds: health.missingBlobRefs, removedBlobs: health.blobOrphans.length, removedWorkMedia: health.workMediaOrphans.length + health.workMediaMismatch.length, correctedSessions: health.sessionCountMismatch.length, releasedBytes, healthyBefore: health.ok };
+  }
+
+  async putBlob(blob, name = '对话图片') {
+    const record = { id: createId('blob'), blob, mimeType: blob.type || 'image/*', size: blob.size, createdAt: Date.now(), name };
+    const transaction = this.database.transaction('blobs', 'readwrite');
+    transaction.objectStore('blobs').put(record);
+    await idbTransactionDone(transaction);
+    return record;
+  }
+
+  async deleteBlob(blobId) {
+    if (!blobId) return;
+    const transaction = this.database.transaction('blobs', 'readwrite');
+    transaction.objectStore('blobs').delete(blobId);
+    await idbTransactionDone(transaction);
+  }
+
+  async deleteSession(sessionId) {
+    const read = this.database.transaction('messages', 'readonly');
+    const readDone = idbTransactionDone(read);
+    const records = await idbRequest(read.objectStore('messages').index('sessionId').getAll(sessionId));
+    await readDone;
+    const transaction = this.database.transaction(['sessions', 'messages'], 'readwrite');
+    transaction.objectStore('sessions').delete(sessionId);
+    const messages = transaction.objectStore('messages');
+    records.forEach((record) => messages.delete(record.id));
+    await idbTransactionDone(transaction);
+  }
+
+  async listStorageRecords(store, { query = '', limit = 200 } = {}) {
+    const allowed = ['sessions', 'messages', 'blobs', 'workMedia', 'meta'];
+    if (!allowed.includes(store)) throw new Error('不支持的数据类型。');
+    const transaction = this.database.transaction(store, 'readonly');
+    const records = await idbRequest(transaction.objectStore(store).getAll());
+    await idbTransactionDone(transaction);
+    const text = String(query || '').trim().toLowerCase();
+    return records.filter((record) => !text || JSON.stringify({ ...record, blob: undefined }).toLowerCase().includes(text)).slice(0, limit);
+  }
+
+  async getStorageRecord(store, key) {
+    const transaction = this.database.transaction(store, 'readonly');
+    const record = await idbRequest(transaction.objectStore(store).get(key));
+    await idbTransactionDone(transaction);
+    return record || null;
+  }
+
+  async getStorageRecordDetail(store, key) {
+    return this.getStorageRecord(store, key);
+  }
+
+  async updateSessionMetadata(id, patch = {}) {
+    const record = await this.getStorageRecord('sessions', id);
+    if (!record) throw new Error('会话不存在。');
+    const next = { ...record, title: String(patch.title ?? record.title).slice(0, 120), messageCount: Number.isFinite(Number(patch.messageCount)) ? Math.max(0, Math.round(Number(patch.messageCount))) : Number(record.messageCount || 0), updatedAt: Date.now() };
+    const transaction = this.database.transaction('sessions', 'readwrite');
+    transaction.objectStore('sessions').put(next);
+    await idbTransactionDone(transaction);
+    return next;
+  }
+
+  async updateStoredMessage(id, patch = {}) {
+    const record = await this.getStorageRecord('messages', id);
+    if (!record) throw new Error('消息不存在。');
+    const message = { ...record.message, role: ['user', 'assistant', 'system'].includes(patch.role) ? patch.role : record.message.role, content: Array.isArray(patch.content) ? patch.content : record.message.content, reasoning: String(patch.reasoning ?? record.message.reasoning ?? '').slice(0, 20000), createdAt: Number(patch.createdAt || record.message.createdAt || Date.now()) };
+    const next = { ...record, message };
+    const transaction = this.database.transaction('messages', 'readwrite');
+    transaction.objectStore('messages').put(next);
+    await idbTransactionDone(transaction);
+    return next;
+  }
+
+  async appendStoredMessage(sessionId, value) {
+    const message = { id: createId('message'), role: ['user', 'assistant', 'system'].includes(value?.role) ? value.role : 'user', content: Array.isArray(value?.content) ? value.content : [{ type: 'text', text: String(value?.text || '') }], createdAt: Date.now() };
+    const existing = await this.listStorageRecords('messages');
+    const position = existing.filter((record) => record.sessionId === sessionId).length;
+    const transaction = this.database.transaction('messages', 'readwrite');
+    transaction.objectStore('messages').put({ id: message.id, sessionId, position, message });
+    await idbTransactionDone(transaction);
+    return message;
+  }
+
+  async deleteStoredMessage(id) {
+    const transaction = this.database.transaction('messages', 'readwrite');
+    transaction.objectStore('messages').delete(id);
+    await idbTransactionDone(transaction);
+  }
+
+  async deleteStoredSession(id) { return this.deleteSession(id); }
+  async deleteStoredBlob(id) { return this.deleteBlob(id); }
+  async deleteStoredWorkMedia(id) { return this.deleteCachedWorkMedia(id); }
+
+  async cleanupOrphanBlobs(extraRefs = []) {
+    const read = this.database.transaction(['messages', 'blobs'], 'readonly');
+    const done = idbTransactionDone(read);
+    const messageRequest = idbRequest(read.objectStore('messages').getAll());
+    const blobRequest = idbRequest(read.objectStore('blobs').getAll());
+    const [messages, blobs] = await Promise.all([messageRequest, blobRequest]);
+    await done;
+    const used = new Set(extraRefs.filter(Boolean));
+    messages.forEach((record) => {
+      const content = record.message?.content;
+      if (!Array.isArray(content)) return;
+      content.forEach((part) => { if (part?.image_url?.ref) used.add(part.image_url.ref); });
+    });
+    const orphans = blobs.filter((record) => !used.has(record.id));
+    if (orphans.length) {
+      const transaction = this.database.transaction('blobs', 'readwrite');
+      orphans.forEach((record) => transaction.objectStore('blobs').delete(record.id));
+      await idbTransactionDone(transaction);
+    }
+    return { removed: orphans.length, bytes: orphans.reduce((total, record) => total + Number(record.size || record.blob?.size || 0), 0) };
+  }
+
+  async stats() {
+    const transaction = this.database.transaction(['sessions', 'messages', 'blobs', 'workMedia'], 'readonly');
+    const done = idbTransactionDone(transaction);
+    const sessionRequest = idbRequest(transaction.objectStore('sessions').count());
+    const messageRequest = idbRequest(transaction.objectStore('messages').count());
+    const blobRequest = idbRequest(transaction.objectStore('blobs').getAll());
+    const workMediaRequest = idbRequest(transaction.objectStore('workMedia').getAll());
+    const [sessions, messages, blobs, workMedia] = await Promise.all([sessionRequest, messageRequest, blobRequest, workMediaRequest]);
+    await done;
+    return { sessions, messages, attachments: blobs.length, attachmentBytes: blobs.reduce((total, record) => total + Number(record.size || record.blob?.size || 0), 0), workMedia: workMedia.length, workMediaBytes: workMedia.reduce((total, record) => total + Number(record.size || record.blob?.size || 0), 0), failedWorkMedia: workMedia.filter((record) => record.status === 'failed').length };
+  }
+}
+
+function reportStorageFailure(message = '对话历史暂时无法保存到 IndexedDB。') {
+  if (storageWarningShown) return;
+  storageWarningShown = true;
+  showToast(message, 'error');
+}
+
+function runtimeBlobRefs() {
+  const refs = new Set();
+  state.chatSessions.forEach((session) => session.messages.forEach((message) => {
+    if (!Array.isArray(message.content)) return;
+    message.content.forEach((part) => { if (part?.image_url?.ref) refs.add(part.image_url.ref); });
+  }));
+  if (chatImage?.blobRef) refs.add(chatImage.blobRef);
+  return [...refs];
+}
+
+async function persistChatSession(session, { immediate = false } = {}) {
+  session.messageCount = session.messages.length;
+  if (!immediate) saveState();
+  if (!storageReady || !storageRepository) {
+    if (immediate) saveState({ immediate: true });
+    return false;
+  }
+  const write = () => {
+    sessionSaveTimers.delete(session.id);
+    const snapshot = { ...session, messages: session.messages.map((message) => ({ ...message })) };
+    const previous = sessionWriteQueues.get(session.id) || Promise.resolve();
+    const queued = previous.catch(() => {}).then(async () => {
+      try {
+        await storageRepository.replaceSession(snapshot);
+      } catch (firstError) {
+        await storageRepository.cleanupOrphanBlobs(runtimeBlobRefs());
+        await storageRepository.replaceSession(snapshot);
+      }
+      await storageRepository.cleanupOrphanBlobs(runtimeBlobRefs());
+      if (state.activeMode === 'works') updateStorageStats();
+      return true;
+    }).catch(() => {
+      reportStorageFailure();
+      return false;
+    });
+    sessionWriteQueues.set(session.id, queued);
+    queued.finally(() => { if (sessionWriteQueues.get(session.id) === queued) sessionWriteQueues.delete(session.id); });
+    return queued;
+  };
+  if (immediate) {
+    window.clearTimeout(sessionSaveTimers.get(session.id));
+    sessionSaveTimers.delete(session.id);
+    const result = await write();
+    saveState({ immediate: true });
+    return result;
+  }
+  window.clearTimeout(sessionSaveTimers.get(session.id));
+  sessionSaveTimers.set(session.id, window.setTimeout(write, getSessionSaveDelay()));
+  return true;
+}
+
+async function initializeStorage() {
+  storageMigrationLocked = loadedStateHadMessages;
+  storageEngineState = loadedStateHadMessages ? 'migrating' : 'checking';
+  try {
+    storageRepository = await StorageRepository.open();
+    if (loadedStateHadMessages) {
+      const migration = await storageRepository.getMeta('legacy-migration');
+      if (!migration || migration.storageVersion !== LIGHTWEIGHT_STATE_VERSION) await storageRepository.migrateLegacy(state.chatSessions);
+      state.chatSessions = await storageRepository.loadSessions(state.chatSessions.map(chatSessionMetadata));
+      storageMigrationLocked = false;
+      storageReady = true;
+      storageEngineState = 'ready';
+      writeLightweightState();
+      startupNotices.push('旧版对话历史已迁移到 IndexedDB。');
+    } else {
+      state.chatSessions = await storageRepository.loadSessions(state.chatSessions);
+      storageReady = true;
+      storageEngineState = 'ready';
+    }
+    await storageRepository.cleanupOrphanBlobs();
+    await hydrateWorkMediaRuntime();
+  } catch (error) {
+    storageMigrationLocked = loadedStateHadMessages;
+    storageReady = false;
+    storageEngineState = 'unavailable';
+    startupNotices.push(loadedStateHadMessages
+      ? 'IndexedDB 迁移失败，旧版 localStorage 数据已原样保留。'
+      : 'IndexedDB 当前不可用，对话历史和本地图片无法持久保存。');
+  }
+}
+
+async function hydrateWorkMediaRuntime() {
+  if (!storageReady || !storageRepository) return;
+  for (const objectUrl of workMediaObjectUrls.values()) URL.revokeObjectURL(objectUrl);
+  workMediaObjectUrls.clear();
+  workMediaRuntime.clear();
+  for (const work of state.works) {
+    try {
+      const record = await storageRepository.getCachedWorkMedia(work.id);
+      if (record?.status === 'ready' && record.blob) {
+        const previous = workMediaObjectUrls.get(work.id);
+        if (previous) URL.revokeObjectURL(previous);
+        const objectUrl = URL.createObjectURL(record.blob);
+        workMediaObjectUrls.set(work.id, objectUrl);
+        workMediaRuntime.set(work.id, { status: 'ready', url: objectUrl, record });
+      } else if (record?.status === 'failed') workMediaRuntime.set(work.id, { status: 'cache-failed', error: record.error || '缓存失败', record });
+    } catch (error) {
+      workMediaRuntime.set(work.id, { status: 'cache-failed', error: '无法读取本地缓存' });
+    }
+  }
+}
+
+async function cacheWorkMedia(work, { silent = false, force = false } = {}) {
+  if (force) workCacheSuppressed.delete(work?.id);
+  if (workCacheSuppressed.has(work?.id) && !force) return null;
+  if (!storageReady || !storageRepository || (!force && !state.ui.storage.cacheImages && work.kind === 'image')) return null;
+  cancelWorkCacheJob(work.id);
+  const controller = new AbortController();
+  workCacheJobs.set(work.id, controller);
+  workMediaRuntime.set(work.id, { status: 'loading', progress: 0 });
+  renderWorks();
+  try {
+    const record = await storageRepository.cacheWorkMedia(work, {
+      signal: controller.signal,
+      onProgress: (progress) => {
+        workMediaRuntime.set(work.id, { status: 'loading', progress });
+        const label = document.querySelector(`[data-work-cache-progress="${CSS.escape(work.id)}"]`);
+        if (label) label.textContent = progress ? `缓存中 ${progress}%` : '缓存中';
+      }
+    });
+    const previous = workMediaObjectUrls.get(work.id);
+    if (previous) URL.revokeObjectURL(previous);
+    const objectUrl = URL.createObjectURL(record.blob);
+    workMediaObjectUrls.set(work.id, objectUrl);
+    workMediaRuntime.set(work.id, { status: 'ready', url: objectUrl, record });
+    renderWorks();
+    if (!silent) showToast('作品媒体已缓存到本地。');
+    if (workCacheJobs.get(work.id) === controller) workCacheJobs.delete(work.id);
+    return record;
+  } catch (error) {
+    if (workCacheJobs.get(work.id) === controller) workCacheJobs.delete(work.id);
+    if (error.name !== 'AbortError') {
+      const message = workCacheErrorMessage(error);
+      await storageRepository.markWorkMediaFailed(work, new Error(message)).catch(() => {});
+      workMediaRuntime.set(work.id, { status: 'cache-failed', error: message });
+      renderWorks();
+      if (!silent) showToast(`媒体缓存失败：${message}`, 'error');
+    }
+    return null;
+  }
+}
+
+function cancelWorkCacheJob(workId) {
+  const controller = workCacheJobs.get(workId);
+  if (controller) controller.abort();
+  workCacheJobs.delete(workId);
+}
+
+function cancelAllWorkCacheJobs() {
+  workCacheJobs.forEach((controller) => controller.abort());
+  workCacheJobs.clear();
+}
+
+function suppressWorkCache(workId) {
+  if (workId) workCacheSuppressed.add(workId);
+}
+
+function startWorkCacheJob(work, options = {}) {
+  if (options.force) workCacheSuppressed.delete(work?.id);
+  return cacheWorkMedia(work, options);
+}
+
+function workCacheErrorMessage(error) {
+  const message = String(error?.message || '');
+  if (/failed to fetch|networkerror|network request failed/i.test(message)) return '浏览器无法跨域下载该媒体，远程地址仍可直接使用。';
+  if (/\（403\）|\(403\)/.test(message)) return '远程媒体拒绝访问（403），可能已过期或需要授权。';
+  if (/\（404\）|\(404\)/.test(message)) return '远程媒体不存在（404），地址可能已失效。';
+  return message || '浏览器无法下载远程媒体。';
+}
+
+async function cacheExistingWorkImages() {
+  if (!storageReady || !state.ui.storage.cacheImages) return;
+  if (workBackfillPromise) return workBackfillPromise;
+  workBackfillPromise = (async () => {
+    const candidates = state.works.filter((work) => {
+      const status = workMediaRuntime.get(work.id)?.status;
+      return work.kind === 'image' && !['ready', 'loading'].includes(status) && !workCacheSuppressed.has(work.id);
+    });
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < candidates.length) {
+        const work = candidates[cursor++];
+        await cacheWorkMedia(work, { silent: true });
+      }
+    };
+    await Promise.all([worker(), worker()]);
+  })().finally(() => { workBackfillPromise = null; });
+  return workBackfillPromise;
 }
 
 function readStoredKey() {
@@ -227,10 +1032,10 @@ function createId(prefix) {
 
 function ensureChatSession() {
   if (state.activeChatId && state.chatSessions.some((session) => session.id === state.activeChatId)) return state.chatSessions.find((session) => session.id === state.activeChatId);
-  const session = { id: createId('chat'), title: '新会话', createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
+  const session = { id: createId('chat'), title: '新会话', createdAt: Date.now(), updatedAt: Date.now(), messages: [], _messagesLoaded: true };
   state.chatSessions.unshift(session);
   state.activeChatId = session.id;
-  saveState();
+  persistChatSession(session, { immediate: true });
   return session;
 }
 
@@ -249,13 +1054,18 @@ function escapeHtml(value) {
 
 function safeMediaUrl(value) {
   if (!value || typeof value !== 'string') return '';
-  if (value.startsWith('data:image/')) return value;
+  if (isImageDataUrl(value)) return value;
   try {
     const url = new URL(value);
-    return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+    return ['http:', 'https:', 'blob:'].includes(url.protocol) ? url.href : '';
   } catch (error) {
     return '';
   }
+}
+
+function safeRemoteMediaUrl(value) {
+  const url = safeMediaUrl(value);
+  return /^https?:/i.test(url) ? url : '';
 }
 
 function isHttpsUrl(value) {
@@ -493,7 +1303,11 @@ const COORD_ANIMS = ['kaleido', 'deal', 'magnet'];
 function openWorkPicker({ onConfirm, max = 1, selected = [] }) {
   const images = state.works
     .filter((work) => work.kind === 'image' && safeMediaUrl(work.url))
-    .map((work) => ({ ...work, url: safeMediaUrl(work.url) }));
+    .map((work) => ({
+      ...work,
+      url: safeMediaUrl(work.url),
+      displayUrl: workMediaRuntime.get(work.id)?.status === 'ready' ? workMediaRuntime.get(work.id).url : safeMediaUrl(work.url)
+    }));
   if (!images.length) { showToast('作品库还没有图片作品，先完成一次图像生成吧。', 'error'); return; }
   const existing = $('#work-picker-modal');
   if (existing) existing.remove();
@@ -536,7 +1350,7 @@ function openWorkPicker({ onConfirm, max = 1, selected = [] }) {
   const grid = backdrop.querySelector('.work-picker-grid');
 
   const cardMarkup = (work, index, isSelected) =>
-    '<article class="work-picker-card' + (isSelected ? ' is-selected' : '') + '" style="--i:' + Math.floor(index / 4) + '" data-work-picker-url="' + escapeHtml(work.url) + '" data-work-picker-title="' + escapeHtml(work.title) + '" data-work-picker-meta="' + escapeHtml(work.meta || '') + '"><button class="work-picker-select" type="button" data-work-picker-action="select" aria-pressed="' + (isSelected ? 'true' : 'false') + '" aria-label="选择 ' + escapeHtml(work.title) + '"><span class="work-picker-media"><img src="' + escapeHtml(work.url) + '" alt="' + escapeHtml(work.title) + '" loading="lazy"><span class="pick-check"><i data-lucide="check" aria-hidden="true"></i></span></span></button><div class="work-picker-footer"><button class="work-picker-name" type="button" data-work-picker-action="select" aria-pressed="' + (isSelected ? 'true' : 'false') + '" title="' + escapeHtml(work.title) + '"><span class="work-picker-title">' + escapeHtml(shortText(work.title, 18)) + '</span></button><button class="work-picker-preview" type="button" data-work-picker-action="preview" aria-label="预览 ' + escapeHtml(work.title) + '" data-tooltip="预览"><i data-lucide="scan-eye" aria-hidden="true"></i></button></div></article>';
+    '<article class="work-picker-card' + (isSelected ? ' is-selected' : '') + '" style="--i:' + Math.floor(index / 4) + '" data-work-picker-url="' + escapeHtml(work.url) + '" data-work-picker-title="' + escapeHtml(work.title) + '" data-work-picker-meta="' + escapeHtml(work.meta || '') + '"><button class="work-picker-select" type="button" data-work-picker-action="select" aria-pressed="' + (isSelected ? 'true' : 'false') + '" aria-label="选择 ' + escapeHtml(work.title) + '"><span class="work-picker-media"><img src="' + escapeHtml(work.displayUrl) + '" alt="' + escapeHtml(work.title) + '" loading="lazy"><span class="pick-check"><i data-lucide="check" aria-hidden="true"></i></span></span></button><div class="work-picker-footer"><button class="work-picker-name" type="button" data-work-picker-action="select" aria-pressed="' + (isSelected ? 'true' : 'false') + '" title="' + escapeHtml(work.title) + '"><span class="work-picker-title">' + escapeHtml(shortText(work.title, 18)) + '</span></button><button class="work-picker-preview" type="button" data-work-picker-action="preview" aria-label="预览 ' + escapeHtml(work.title) + '" data-tooltip="预览"><i data-lucide="scan-eye" aria-hidden="true"></i></button></div></article>';
 
   const applyCoords = () => {
     const gridRect = grid.getBoundingClientRect();
@@ -638,10 +1452,10 @@ function openWorkPicker({ onConfirm, max = 1, selected = [] }) {
     openMediaPreview({
       items,
       index,
-      isItemSelected: (item) => draftSelection.has(item.url),
-      disabledWhenChoosing: (item) => limit > 1 && draftSelection.size >= limit && !draftSelection.has(item.url),
+      isItemSelected: (item) => draftSelection.has(item.sourceUrl || item.url),
+      disabledWhenChoosing: (item) => limit > 1 && draftSelection.size >= limit && !draftSelection.has(item.sourceUrl || item.url),
       chooseDisabledLabel: `已达上限（最多 ${limit} 张）`,
-      onChoose: (item) => toggleSelection(item.url),
+      onChoose: (item) => toggleSelection(item.sourceUrl || item.url),
       returnFocus: card.querySelector('[data-work-picker-action="preview"]')
     });
   };
@@ -724,7 +1538,9 @@ function generationDetailRows(item) {
 
 function previewItemFromWork(work) {
   return {
-    url: safeMediaUrl(work.url),
+    url: workMediaRuntime.get(work.id)?.url || safeMediaUrl(work.url),
+    sourceUrl: safeMediaUrl(work.url),
+    workId: work.id,
     title: work.title,
     meta: work.meta || '',
     kind: work.kind,
@@ -764,7 +1580,7 @@ function showMediaDetailsModal(item, returnFocus = document.activeElement) {
   const existing = $('#media-details-modal');
   if (existing) existing.remove();
   const rows = generationDetailRows(item);
-  const url = safeMediaUrl(item.url || item.src);
+  const url = safeMediaUrl(item.sourceUrl || item.url || item.src);
   const copyableUrl = /^https?:/i.test(url) ? url : '';
   const sections = [];
   if (item.prompt) {
@@ -809,7 +1625,7 @@ function showMediaDetailsModal(item, returnFocus = document.activeElement) {
 function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLabel = '选择这张图', chooseSelectedLabel = '已选，点击取消', chooseDisabledLabel = '', disabledWhenChoosing, returnFocus = document.activeElement }) {
   const existing = $('#media-preview');
   if (existing) existing.remove();
-  const list = Array.from(items || []).filter((item) => item && (item.url || item.src));
+  const list = Array.from(items || []).filter((item) => item && (item.url || item.src || item.workId));
   if (!list.length) return;
   let current = Math.min(Math.max(0, index), list.length - 1);
   const navVisible = list.length > 1;
@@ -897,8 +1713,18 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
     const src = item.url || item.src;
     naturalSize = null;
     mediaBox.classList.add('is-loading');
+    mediaBox.classList.remove('is-unavailable');
     mediaBox.style.removeProperty('width');
     mediaBox.style.removeProperty('height');
+    if (!src) {
+      naturalSize = { width: 640, height: 360 };
+      mediaBox.classList.add('is-unavailable');
+      mediaElement.innerHTML = '<div class="preview-media-error"><i data-lucide="image-off" aria-hidden="true"></i><strong>媒体地址失效</strong><small>作品记录仍然保留，但没有可加载的本地缓存或远程地址。</small><div><button class="text-button" type="button" data-preview-action="recache"><i data-lucide="refresh-cw" aria-hidden="true"></i>尝试重新缓存</button></div></div>';
+      renderDetails(item);
+      updateMediaBox();
+      refreshIcons();
+      return;
+    }
     mediaElement.innerHTML = item.kind === 'video' ? `<video controls autoplay muted playsinline preload="metadata" src="${escapeHtml(src)}"></video>` : `<img src="${escapeHtml(src)}" alt="${escapeHtml(item.title || '')}">`;
     const media = mediaElement.querySelector('img, video');
     let readyHandled = false;
@@ -917,6 +1743,23 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
       updateMediaBox();
     };
     media.addEventListener(item.kind === 'video' ? 'loadedmetadata' : 'load', onReady, { once: true });
+    media.addEventListener('error', () => {
+      if (version !== renderVersion || !media.isConnected) return;
+      const sourceUrl = safeMediaUrl(item.sourceUrl);
+      const runtime = item.workId ? workMediaRuntime.get(item.workId) : null;
+      if (runtime?.status === 'ready' && src === runtime.url && sourceUrl && sourceUrl !== src) {
+        item.url = sourceUrl;
+        workMediaRuntime.set(item.workId, { status: 'cache-failed', error: '本地缓存无法读取，已回退远程地址', record: runtime.record });
+        renderMedia();
+        return;
+      }
+      naturalSize = { width: 640, height: 360 };
+      mediaBox.classList.add('is-unavailable');
+      mediaElement.innerHTML = `<div class="preview-media-error"><i data-lucide="image-off" aria-hidden="true"></i><strong>媒体地址失效</strong><small>远程媒体无法加载，可重新缓存或在新窗口检查原地址。</small><div><button class="text-button" type="button" data-preview-action="recache"><i data-lucide="refresh-cw" aria-hidden="true"></i>尝试重新缓存</button>${sourceUrl ? '<button class="text-button" type="button" data-preview-action="open-original"><i data-lucide="external-link" aria-hidden="true"></i>打开原地址</button>' : ''}</div></div>`;
+      if (item.workId) workMediaRuntime.set(item.workId, { status: 'unavailable', error: '远程媒体地址无法访问' });
+      updateMediaBox();
+      refreshIcons();
+    }, { once: true });
     if ((media instanceof HTMLImageElement && media.complete) || (media instanceof HTMLVideoElement && media.readyState >= 1)) onReady();
     if (media instanceof HTMLVideoElement) {
       try {
@@ -1015,6 +1858,21 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
     else if (action === 'next') go(1);
     else if (action === 'copy-prompt') copyText(item.prompt);
     else if (action === 'details') showMediaDetailsModal(item, event.target.closest('[data-preview-action]'));
+    else if (action === 'open-original') {
+      const url = safeMediaUrl(item.sourceUrl || item.url);
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+    } else if (action === 'recache') {
+      const work = state.works.find((record) => record.id === item.workId);
+      if (!work) { showToast('这个媒体没有可重新缓存的作品记录。', 'error'); return; }
+      const button = event.target.closest('[data-preview-action="recache"]');
+      button.disabled = true;
+      cacheWorkMedia(work, { force: true }).then((record) => {
+        button.disabled = false;
+        if (!record) return;
+        item.url = workMediaRuntime.get(work.id)?.url || safeMediaUrl(work.url);
+        renderMedia();
+      });
+    }
     else if (action === 'choose') {
       if (isItemSelected && isItemSelected(item, current)) {
         onChoose(item, current);
@@ -1036,8 +1894,182 @@ function openMediaPreview({ items, index = 0, isItemSelected, onChoose, chooseLa
   window.requestAnimationFrame(() => overlay.querySelector('.preview-close')?.focus());
 }
 
+function openWorkspaceMenu() {
+  const existing = $('#workspace-menu');
+  if (existing) { existing.remove(); syncOverlayState(); return; }
+  const menu = document.createElement('div');
+  menu.id = 'workspace-menu';
+  menu.className = 'workspace-menu modal-backdrop';
+  menu.innerHTML = `<section class="workspace-menu-panel" role="dialog" aria-modal="true" aria-labelledby="workspace-menu-title"><div class="modal-topline"><span class="section-kicker"><span class="signal-line"></span> 本地工作区</span><button class="icon-button small" type="button" data-workspace-close aria-label="关闭工作区菜单"><i data-lucide="x" aria-hidden="true"></i></button></div><h2 id="workspace-menu-title">在工作区中切换</h2><div class="workspace-menu-grid">${Object.entries(MODE_META).map(([mode, meta]) => `<button type="button" data-workspace-mode="${mode}"><i data-lucide="${mode === 'chat' ? 'message-square-text' : mode === 'image' ? 'image' : mode === 'video' ? 'clapperboard' : 'archive'}" aria-hidden="true"></i>${meta.label}</button>`).join('')}<button type="button" data-workspace-settings><i data-lucide="settings-2" aria-hidden="true"></i>设置中心</button><button type="button" data-workspace-storage><i data-lucide="database" aria-hidden="true"></i>存储管理</button><button type="button" data-workspace-help><i data-lucide="circle-help" aria-hidden="true"></i>帮助中心</button></div></section>`;
+  document.body.appendChild(menu);
+  refreshIcons();
+  const onKey = (event) => { if (event.key === 'Escape') { event.preventDefault(); close(); } };
+  const close = () => { document.removeEventListener('keydown', onKey, true); menu.remove(); syncOverlayState(); };
+  document.addEventListener('keydown', onKey, true);
+  menu.addEventListener('click', (event) => {
+    if (event.target === menu || event.target.closest('[data-workspace-close]')) { close(); return; }
+    const mode = event.target.closest('[data-workspace-mode]')?.dataset.workspaceMode;
+    if (mode) { close(); setMode(mode); return; }
+    if (event.target.closest('[data-workspace-settings]')) { close(); openSettingsModal('general'); return; }
+    if (event.target.closest('[data-workspace-storage]')) { close(); openSettingsModal('storage'); return; }
+    if (event.target.closest('[data-workspace-help]')) { close(); openHelpCenter(); }
+  });
+  syncOverlayState();
+  menu.querySelector('[data-workspace-close]')?.focus();
+}
+
+function openHelpCenter() {
+  const existing = $('#help-modal');
+  if (existing) { existing.remove(); syncOverlayState(); return; }
+  const backdrop = document.createElement('div');
+  backdrop.id = 'help-modal';
+  backdrop.className = 'modal-backdrop';
+  const sections = [
+    ['start', '快速开始', '先在连接设置中选择站点并配置 API 密钥，然后从文本、图像或视频模式开始创作。'],
+    ['chat', '文本对话', '输入问题后发送。通过添加图片可以让 Agnes 进行图像理解，消息支持编辑、复制和重新生成。'],
+    ['image', '图像生成', '文生图直接输入描述；图生图和多图合成可拖入参考图、从作品集合选择或添加 HTTPS 图片链接。'],
+    ['video', '视频生成', '选择文生视频、图生视频或关键帧动画，设置时长、比例和帧率后提交异步任务。'],
+    ['reference', '参考图与关键帧', '点击参考图可放大预览；在可排序场景中按住图片并移动即可排序或交换，删除按钮只移除当前参考图。'],
+    ['works', '作品集合', '生成结果会保留媒体 URL、提示词和参数。图片可自动缓存，视频可在作品卡中手动缓存。'],
+    ['backup', '作品备份', '作品页面可导出或导入版本化 JSON。备份包含媒体地址、提示词和生成参数，不包含 API 密钥或媒体文件。'],
+    ['storage', '本地存储', '聊天正文和本地附件保存在 IndexedDB，清理缓存不会删除作品记录。设置中心可检查、修复和管理安全字段。'],
+    ['connection', '连接与站点', '国际站、国内站和自定义 Base URL 共用一个 API 密钥。连接失败时可在设置中心测试网络与认证状态。'],
+    ['appearance', '界面设置', '主题支持深色、浅色和跟随系统；还可以调整界面密度、减少动效和自动保存频率。'],
+    ['faq', '常见问题', '远程地址失效时可重新缓存或打开原地址；浏览器无痕模式可能限制 IndexedDB 和持久存储。']
+  ];
+  backdrop.innerHTML = `<section class="modal-panel help-panel" role="dialog" aria-modal="true" aria-labelledby="help-title"><div class="modal-topline"><span class="section-kicker"><span class="signal-line"></span> 使用手册</span><button class="icon-button small" type="button" data-help-close aria-label="关闭帮助"><i data-lucide="x" aria-hidden="true"></i></button></div><h2 id="help-title">Agnes 工作台帮助</h2><div class="help-quick-actions"><button type="button" data-help-mode="chat">文本对话</button><button type="button" data-help-mode="image">图像生成</button><button type="button" data-help-mode="video">视频生成</button><button type="button" data-help-mode="works">作品集合</button><button type="button" data-help-settings="storage">存储设置</button><button type="button" data-help-settings="connection">连接设置</button></div><input class="help-search" type="search" placeholder="搜索帮助内容" aria-label="搜索帮助内容"><div class="help-layout"><nav class="help-toc">${sections.map(([id, title]) => `<button type="button" data-help-target="${id}">${title}</button>`).join('')}</nav><div class="help-content">${sections.map(([id, title, body]) => `<article id="help-section-${id}" data-help-section><h3>${title}</h3><p>${body}</p></article>`).join('')}</div></div></section>`;
+  document.body.appendChild(backdrop);
+  refreshIcons();
+  const onKey = (event) => { if (event.key === 'Escape') { event.preventDefault(); close(); } };
+  const close = () => { document.removeEventListener('keydown', onKey, true); backdrop.remove(); syncOverlayState(); };
+  document.addEventListener('keydown', onKey, true);
+  backdrop.addEventListener('click', (event) => {
+    if (event.target === backdrop || event.target.closest('[data-help-close]')) { close(); return; }
+    const target = event.target.closest('[data-help-target]')?.dataset.helpTarget;
+    if (target) $(`#help-section-${target}`, backdrop)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const mode = event.target.closest('[data-help-mode]')?.dataset.helpMode;
+    if (mode) { close(); setMode(mode); return; }
+    const settings = event.target.closest('[data-help-settings]')?.dataset.helpSettings;
+    if (settings) { close(); openSettingsModal(settings); }
+  });
+  $('.help-search', backdrop).addEventListener('input', (event) => {
+    const query = event.target.value.trim().toLowerCase();
+    $$('[data-help-section]', backdrop).forEach((section) => { section.hidden = Boolean(query && !section.textContent.toLowerCase().includes(query)); });
+  });
+  syncOverlayState();
+  backdrop.querySelector('[data-help-close]')?.focus();
+}
+
+async function openStorageDataManager() {
+  if (!storageReady || !storageRepository) { showToast('IndexedDB 当前不可用。', 'error'); return; }
+  const existing = $('#storage-data-modal');
+  if (existing) { existing.remove(); syncOverlayState(); return; }
+  const backdrop = document.createElement('div');
+  backdrop.id = 'storage-data-modal';
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML = `<section class="modal-panel storage-data-panel" role="dialog" aria-modal="true" aria-labelledby="storage-data-title"><div class="modal-topline"><span class="section-kicker"><span class="signal-line"></span> IndexedDB 管理</span><button class="icon-button small" type="button" data-storage-close aria-label="关闭数据管理"><i data-lucide="x" aria-hidden="true"></i></button></div><h2 id="storage-data-title">本地数据</h2><div class="storage-data-toolbar"><select id="storage-data-store" aria-label="数据类型"><option value="sessions">会话</option><option value="messages">消息</option><option value="blobs">聊天附件</option><option value="workMedia">作品缓存</option><option value="meta">系统元数据</option></select><input id="storage-data-search" type="search" placeholder="搜索记录" aria-label="搜索记录"></div><div class="storage-data-actions"><button class="text-button" type="button" id="storage-new-session"><i data-lucide="plus" aria-hidden="true"></i>新建空会话</button><button class="text-button" type="button" id="storage-new-message"><i data-lucide="message-square-plus" aria-hidden="true"></i>新增消息</button></div><div id="storage-data-list" class="storage-data-list"></div></section>`;
+  document.body.appendChild(backdrop);
+  refreshIcons();
+  const onKey = (event) => { if (event.key === 'Escape') { event.preventDefault(); close(); } };
+  const close = () => { document.removeEventListener('keydown', onKey, true); backdrop.remove(); syncOverlayState(); };
+  document.addEventListener('keydown', onKey, true);
+  backdrop.addEventListener('click', (event) => { if (event.target === backdrop || event.target.closest('[data-storage-close]')) close(); });
+  const render = async () => {
+    const store = $('#storage-data-store', backdrop).value;
+    const query = $('#storage-data-search', backdrop).value;
+    const records = await storageRepository.listStorageRecords(store, { query, limit: 100 });
+    $('#storage-data-list', backdrop).innerHTML = records.length ? records.map((record) => { const key = String(record.id || record.workId || record.key || ''); const editable = store === 'sessions'; const message = record.message || {}; const messageText = Array.isArray(message.content) ? message.content.filter((part) => part?.type === 'text').map((part) => part.text || '').join('') : ''; return `<article class="storage-data-record"><strong>${escapeHtml(record.title || record.name || record.id || record.workId || record.key || '记录')}</strong><small>${escapeHtml(store)} · ${escapeHtml(formatFullDate(record.updatedAt || record.createdAt || record.cachedAt || Date.now()))}</small>${editable ? `<input class="storage-data-title-input" data-storage-title="${escapeHtml(key)}" value="${escapeHtml(record.title || '')}" aria-label="会话标题">` : ''}${store === 'messages' ? `<select class="storage-data-role" data-storage-message-role="${escapeHtml(key)}" aria-label="消息角色"><option value="user"${message.role === 'user' ? ' selected' : ''}>用户</option><option value="assistant"${message.role === 'assistant' ? ' selected' : ''}>助手</option><option value="system"${message.role === 'system' ? ' selected' : ''}>系统</option></select><textarea class="storage-data-message-input" data-storage-message-text="${escapeHtml(key)}" rows="2" aria-label="消息文本">${escapeHtml(messageText)}</textarea><textarea class="storage-data-message-input" data-storage-message-reasoning="${escapeHtml(key)}" rows="2" aria-label="思考内容" placeholder="思考内容（可选）">${escapeHtml(message.reasoning || '')}</textarea>` : ''}<button type="button" data-storage-delete="${escapeHtml(key)}" data-storage-store="${store}"${store === 'meta' ? ' disabled' : ''}><i data-lucide="trash-2" aria-hidden="true"></i>删除</button></article>`; }).join('') : '<div class="storage-data-empty">没有匹配的记录</div>';
+    refreshIcons();
+  };
+  backdrop.addEventListener('change', (event) => { if (event.target.id === 'storage-data-store') render(); });
+  let searchTimer = 0;
+  $('#storage-data-search', backdrop).addEventListener('input', () => { window.clearTimeout(searchTimer); searchTimer = window.setTimeout(render, 160); });
+  $('#storage-new-session', backdrop).addEventListener('click', async () => { startNewChat(); await persistChatSession(getActiveSession(), { immediate: true }); await render(); });
+  $('#storage-new-message', backdrop).addEventListener('click', async () => { const session = getActiveSession(); const message = await storageRepository.appendStoredMessage(session.id, { role: 'user', text: '' }); session.messages.push(message); session.messageCount = session.messages.length; session.updatedAt = Date.now(); await storageRepository.updateSessionMetadata(session.id, { messageCount: session.messageCount }); saveState({ immediate: true }); renderChat(); await render(); showToast('已新增空白消息，可在列表中编辑。'); });
+  backdrop.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-storage-delete]');
+    if (!button || button.disabled) return;
+    showConfirmModal({ title: '删除本地记录', message: '此操作只影响 IndexedDB 中的本地数据，无法撤销。', confirmText: '确认删除', onConfirm: async () => {
+      const store = button.dataset.storageStore;
+      const key = button.dataset.storageDelete;
+      if (store === 'sessions') await storageRepository.deleteStoredSession(key);
+      else if (store === 'messages') await storageRepository.deleteStoredMessage(key);
+      else if (store === 'blobs') await storageRepository.deleteStoredBlob(key);
+      else if (store === 'workMedia') { suppressWorkCache(key); cancelWorkCacheJob(key); await storageRepository.deleteStoredWorkMedia(key); const objectUrl = workMediaObjectUrls.get(key); if (objectUrl) URL.revokeObjectURL(objectUrl); workMediaObjectUrls.delete(key); workMediaRuntime.delete(key); renderWorks(); }
+      if (store === 'sessions') {
+        state.chatSessions = state.chatSessions.filter((session) => session.id !== key);
+        if (state.activeChatId === key) { state.activeChatId = state.chatSessions[0]?.id || null; ensureChatSession(); }
+        renderChat();
+        saveState({ immediate: true });
+        await storageRepository.cleanupOrphanBlobs(runtimeBlobRefs());
+      }
+      if (store === 'messages') {
+        const session = state.chatSessions.find((item) => item.messages?.some((message) => message.id === key));
+        if (session) { session.messages = session.messages.filter((message) => message.id !== key); session.messageCount = session.messages.length; session.updatedAt = Date.now(); await storageRepository.updateSessionMetadata(session.id, { messageCount: session.messageCount }); renderChat(); saveState({ immediate: true }); await storageRepository.cleanupOrphanBlobs(runtimeBlobRefs()); }
+      }
+      await render(); updateStorageStats();
+    } });
+  });
+  backdrop.addEventListener('change', async (event) => {
+    const input = event.target.closest('[data-storage-title]');
+    if (input) try {
+      await storageRepository.updateSessionMetadata(input.dataset.storageTitle, { title: input.value });
+      const session = state.chatSessions.find((item) => item.id === input.dataset.storageTitle);
+      if (session) { session.title = input.value; session.updatedAt = Date.now(); }
+      saveState({ immediate: true });
+      renderChat();
+      showToast('会话标题已更新。');
+    } catch (error) { showToast('会话标题更新失败。', 'error'); }
+    const role = event.target.closest('[data-storage-message-role]');
+    if (role) await updateManagedMessage(role.dataset.storageMessageRole, { role: role.value });
+  });
+  backdrop.addEventListener('blur', async (event) => {
+    const input = event.target.closest('[data-storage-message-text]');
+    if (input) await updateManagedMessage(input.dataset.storageMessageText, { text: input.value });
+    const reasoning = event.target.closest('[data-storage-message-reasoning]');
+    if (reasoning) await updateManagedMessage(reasoning.dataset.storageMessageReasoning, { reasoning: reasoning.value });
+  }, true);
+  syncOverlayState();
+  await render();
+  backdrop.querySelector('[data-storage-close]')?.focus();
+}
+
+async function updateManagedMessage(id, patch = {}) {
+  try {
+    const record = await storageRepository.getStorageRecord('messages', id);
+    if (!record) return;
+    const content = Array.isArray(record.message?.content) ? record.message.content.map((part) => ({ ...part })) : [{ type: 'text', text: '' }];
+    const memoryMessage = state.chatSessions.flatMap((session) => session.messages || []).find((message) => message.id === id);
+    const memoryContent = Array.isArray(memoryMessage?.content) ? memoryMessage.content.map((part) => ({ ...part })) : content.map((part) => ({ ...part }));
+    if (patch.text !== undefined) {
+      const textPart = content.find((part) => part.type === 'text');
+      if (textPart) textPart.text = String(patch.text).slice(0, 20000);
+      else content.unshift({ type: 'text', text: String(patch.text).slice(0, 20000) });
+      const memoryTextPart = memoryContent.find((part) => part.type === 'text');
+      if (memoryTextPart) memoryTextPart.text = String(patch.text).slice(0, 20000);
+      else memoryContent.unshift({ type: 'text', text: String(patch.text).slice(0, 20000) });
+    }
+    const reasoning = patch.reasoning !== undefined ? String(patch.reasoning).slice(0, 20000) : undefined;
+    await storageRepository.updateStoredMessage(id, { role: patch.role, content, reasoning });
+    for (const session of state.chatSessions) {
+      const message = session.messages?.find((item) => item.id === id);
+      if (message) { message.role = patch.role || message.role; message.content = memoryContent; if (reasoning !== undefined) message.reasoning = reasoning; session.updatedAt = Date.now(); session.messageCount = session.messages.length; }
+    }
+    renderChat();
+    saveState({ immediate: true });
+    showToast('消息已更新。');
+  } catch (error) { showToast('消息更新失败。', 'error'); }
+}
+
 function updateKeyStatus(connected = false, authError = false) {
-  if (connected) connectionStatus = 'connected';
+  if (connected) {
+    connectionStatus = 'connected';
+    const now = Date.now();
+    if (now - Number(state.connection.lastVerifiedAt || 0) > 30000) {
+      state.connection.lastVerifiedAt = now;
+      saveState();
+    }
+  }
   else if (authError) connectionStatus = 'error';
   else if (!apiKey) connectionStatus = 'idle';
   const text = $('#api-status-text');
@@ -1052,6 +2084,11 @@ function updateKeyStatus(connected = false, authError = false) {
   status.classList.toggle('is-error', Boolean(apiKey && connectionStatus === 'error'));
   dot.classList.toggle('is-live', Boolean(apiKey && connectionStatus === 'connected'));
   status.setAttribute('aria-label', `打开连接设置，当前为${activeConnectionLabel()}，${stateLabel}`);
+  const settingsStatus = $('#settings-connection-status');
+  if (settingsStatus) {
+    const verified = state.connection.lastVerifiedAt ? `，最近验证 ${formatFullDate(state.connection.lastVerifiedAt)}` : '';
+    settingsStatus.textContent = `当前状态：${stateLabel}${verified}`;
+  }
 }
 
 function syncConnectionModal() {
@@ -1073,21 +2110,111 @@ function selectConnectionEndpoint(endpoint) {
   syncConnectionModal();
 }
 
-function openKeyModal() {
-  const modal = $('#key-modal');
+function selectSettingsSection(section = 'general') {
+  const next = ['general', 'storage', 'connection'].includes(section) ? section : 'general';
+  $$('[data-settings-section]').forEach((button) => {
+    const active = button.dataset.settingsSection === next;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  $$('[data-settings-panel]').forEach((panel) => panel.classList.toggle('is-hidden', panel.dataset.settingsPanel !== next));
+  if (next === 'storage') updateStorageStats();
+}
+
+function setGeneralSettingsControls() {
+  const general = state.ui.general || {};
+  const storage = state.ui.storage || {};
+  $('#settings-theme').value = general.theme || 'dark';
+  $('#settings-density').value = general.density || 'comfortable';
+  $('#settings-reduced-motion').checked = Boolean(general.reducedMotion);
+  $('#settings-auto-fullscreen').checked = Boolean(state.ui.chat.autoFullscreen);
+  $('#settings-autosave').value = general.autoSaveProfile || 'standard';
+  $('#settings-cache-images').checked = storage.cacheImages !== false;
+  $('#settings-session-retention').value = String(normalizeRetention(storage.sessionRetention, 'sessions'));
+  $('#settings-work-retention').value = String(normalizeRetention(storage.workRetention, 'works'));
+  applyGeneralSettings();
+}
+
+function applyGeneralSettings() {
+  const general = state.ui.general || {};
+  const theme = ['dark', 'light', 'system'].includes(general.theme) ? general.theme : 'dark';
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme === 'system' ? 'light dark' : theme;
+  document.documentElement.dataset.density = general.density === 'compact' ? 'compact' : 'comfortable';
+  document.documentElement.classList.toggle('reduce-motion', Boolean(general.reducedMotion));
+}
+
+function updateGeneralSetting(key, value) {
+  state.ui.general[key] = value;
+  applyGeneralSettings();
+  saveState();
+}
+
+function updateStorageSetting(key, value) {
+  const normalized = key === 'sessionRetention' ? normalizeRetention(value, 'sessions') : key === 'workRetention' ? normalizeRetention(value, 'works') : value;
+  saveStoragePolicy({ [key]: normalized });
+  if (key === 'cacheImages' && value) cacheExistingWorkImages();
+}
+
+function resetGeneralSettings() {
+  showConfirmModal({
+    title: '恢复默认界面设置',
+    message: '主题、密度、动效和自动保存频率将恢复默认值。作品和对话不会被删除。',
+    confirmText: '恢复默认',
+    onConfirm: () => {
+      state.ui.general = { theme: 'system', density: 'comfortable', reducedMotion: false, autoSaveProfile: 'standard' };
+      setGeneralSettingsControls();
+      saveState({ immediate: true });
+      showToast('通用设置已恢复默认。');
+    }
+  });
+}
+
+function openSettingsModal(section = 'general') {
+  const modal = $('#settings-modal');
   const input = $('#api-key-input');
+  settingsReturnFocus = document.activeElement;
   modal.hidden = false;
   syncOverlayState();
   input.value = apiKey;
   connectionDraft = { endpoint: state.connection.endpoint, customBaseUrl: state.connection.customBaseUrl || '' };
   syncConnectionModal();
-  window.setTimeout(() => input.focus(), 30);
+  setGeneralSettingsControls();
+  selectSettingsSection(section);
+  if (settingsKeyHandler) document.removeEventListener('keydown', settingsKeyHandler, true);
+  settingsKeyHandler = (event) => {
+    if (event.key === 'Escape' && !$('#confirm-modal')) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSettingsModal();
+      return;
+    }
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      const tab = event.target.closest('[data-settings-section]');
+      if (!tab) return;
+      const tabs = $$('[data-settings-section]');
+      const nextIndex = (tabs.indexOf(tab) + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      event.preventDefault();
+      selectSettingsSection(tabs[nextIndex].dataset.settingsSection);
+      tabs[nextIndex].focus();
+    }
+  };
+  document.addEventListener('keydown', settingsKeyHandler, true);
+  window.setTimeout(() => (section === 'connection' ? input : modal.querySelector('[data-settings-section]'))?.focus(), 30);
 }
 
-function closeKeyModal() {
-  $('#key-modal').hidden = true;
+function closeSettingsModal() {
+  $('#settings-modal').hidden = true;
+  if (settingsKeyHandler) document.removeEventListener('keydown', settingsKeyHandler, true);
+  settingsKeyHandler = null;
   syncOverlayState();
+  const target = settingsReturnFocus;
+  settingsReturnFocus = null;
+  if (target?.isConnected) window.requestAnimationFrame(() => target.focus());
 }
+
+function openKeyModal() { openSettingsModal('connection'); }
+function closeKeyModal() { closeSettingsModal(); }
 
 function requireApiKey() {
   if (apiKey) return true;
@@ -1163,7 +2290,11 @@ function textFromChatContent(content) {
 function messageForApi(message) {
   const content = message.role === 'user' && typeof message.content === 'string'
     ? [{ type: 'text', text: message.content }]
-    : message.content;
+    : Array.isArray(message.content)
+      ? message.content.map((part) => part?.type === 'image_url'
+        ? { type: 'image_url', image_url: { url: part.image_url?.url || '' } }
+        : part)
+      : message.content;
   return { role: message.role, content };
 }
 
@@ -1272,7 +2403,10 @@ const AgnesClient = {
   }
 };
 
-function init() {
+async function init() {
+  applyGeneralSettings();
+  await initializeStorage();
+  loadPromptExamples();
   ensureChatSession();
   bindEvents();
   syncUiControls();
@@ -1282,18 +2416,22 @@ function init() {
   renderVideoJob();
   renderVideoRefs();
   renderWorks();
+  setGeneralSettingsControls();
   updateKeyStatus(false);
   applyLayoutState();
   refreshIcons();
+  updateStorageStats();
+  startupNotices.forEach((message) => showToast(message, message.includes('失败') || message.includes('不可用') ? 'error' : 'info'));
 }
 
 function bindEvents() {
   $$('.nav-item').forEach((button) => button.addEventListener('click', () => setMode(button.dataset.mode)));
-  $('#api-status').addEventListener('click', openKeyModal);
+  $('#settings-button').addEventListener('click', () => openSettingsModal('general'));
+  $('#api-status').addEventListener('click', () => openSettingsModal('connection'));
   $$('[data-connection-endpoint]').forEach((button) => button.addEventListener('click', () => selectConnectionEndpoint(button.dataset.connectionEndpoint)));
   $('#custom-base-url-input').addEventListener('input', (event) => { connectionDraft.customBaseUrl = event.target.value; });
-  $('#close-key-settings').addEventListener('click', closeKeyModal);
-  $('#key-modal').addEventListener('click', (event) => { if (event.target === $('#key-modal')) closeKeyModal(); });
+  $('#close-key-settings').addEventListener('click', closeSettingsModal);
+  $('#settings-modal').addEventListener('click', (event) => { if (event.target === $('#settings-modal')) closeSettingsModal(); });
   $('#save-api-key').addEventListener('click', saveApiKey);
   $('#clear-api-key').addEventListener('click', () => showConfirmModal({
     title: '清除本地 API 密钥',
@@ -1302,6 +2440,32 @@ function bindEvents() {
     onConfirm: clearApiKey
   }));
   $('#toggle-key-visibility').addEventListener('click', toggleKeyVisibility);
+  $$('[data-settings-section]').forEach((button) => button.addEventListener('click', () => selectSettingsSection(button.dataset.settingsSection)));
+  $('#settings-theme').addEventListener('change', (event) => updateGeneralSetting('theme', event.target.value));
+  $('#settings-density').addEventListener('change', (event) => updateGeneralSetting('density', event.target.value));
+  $('#settings-reduced-motion').addEventListener('change', (event) => updateGeneralSetting('reducedMotion', event.target.checked));
+  $('#settings-auto-fullscreen').addEventListener('change', (event) => {
+    state.ui.chat.autoFullscreen = event.target.checked;
+    $('#chat-auto-fullscreen').checked = event.target.checked;
+    saveState();
+  });
+  $('#settings-autosave').addEventListener('change', (event) => updateGeneralSetting('autoSaveProfile', event.target.value));
+  $('#settings-cache-images').addEventListener('change', (event) => updateStorageSetting('cacheImages', event.target.checked));
+  $('#settings-session-retention').addEventListener('change', (event) => {
+    updateStorageSetting('sessionRetention', event.target.value);
+    event.target.value = String(state.ui.storage.sessionRetention);
+  });
+  $('#settings-work-retention').addEventListener('change', (event) => {
+    updateStorageSetting('workRetention', event.target.value);
+    event.target.value = String(state.ui.storage.workRetention);
+  });
+  $('#reset-general-settings').addEventListener('click', resetGeneralSettings);
+  $('#request-persistent-storage').addEventListener('click', requestPersistentStorage);
+  $('#check-storage-health').addEventListener('click', checkStorageHealthUi);
+  $('#repair-storage').addEventListener('click', repairStorageUi);
+  $('#clear-cached-media').addEventListener('click', clearCachedMediaUi);
+  $('#storage-data-manager').addEventListener('click', openStorageDataManager);
+  $('#test-api-connection').addEventListener('click', testApiConnection);
 
   $('#new-chat').addEventListener('click', startNewChat);
   $('#clear-chat').addEventListener('click', () => showConfirmModal({
@@ -1340,6 +2504,9 @@ function bindEvents() {
   $('#image-reference-grid').addEventListener('keydown', handleMediaReferencePreviewKeydown);
   $('#image-reference-grid').addEventListener('pointerdown', startReferenceDrag);
   $('#image-prompt-structure').addEventListener('click', handleImageStructureAction);
+  $('#image-prompt-showcase').addEventListener('click', handlePromptShowcaseAction);
+  $('#workspace-button').addEventListener('click', openWorkspaceMenu);
+  $('#help-button').addEventListener('click', openHelpCenter);
   $('#image-result').addEventListener('click', handleImageResultAction);
   $('#image-pick-work').addEventListener('click', () => {
     const maxRefs = imageModeMaxRefs();
@@ -1466,6 +2633,9 @@ function bindEvents() {
     confirmText: '确认清除',
     onConfirm: clearWorks
   }));
+  $('#cleanup-storage').addEventListener('click', requestStorageAttachmentCleanup);
+  $('#compact-history').addEventListener('click', requestHistoryCompaction);
+  $('#refresh-storage-stats').addEventListener('click', () => updateStorageStats({ announce: true }));
   $('#works-grid').addEventListener('click', handleWorkAction);
   $('#sidebar-collapse-toggle').addEventListener('click', toggleSidebarCollapse);
   $('#inspector-open-toggle').addEventListener('click', toggleInspectorCollapse);
@@ -1476,6 +2646,7 @@ function bindEvents() {
   const inspectorMedia = window.matchMedia('(max-width: 1160px)');
   if (inspectorMedia.addEventListener) inspectorMedia.addEventListener('change', syncMobileInspectorLayout);
   else inspectorMedia.addListener?.(syncMobileInspectorLayout);
+  window.addEventListener('pagehide', writeLightweightState);
 }
 
 function syncUiControls() {
@@ -1636,7 +2807,14 @@ function setMode(mode) {
   $$('[data-mode-panel]').forEach((panel) => panel.classList.toggle('is-hidden', panel.dataset.modePanel !== nextMode));
   $('#mode-breadcrumb').textContent = MODE_META[nextMode].label;
   $$('.inspector-content').forEach((panel) => panel.classList.toggle('is-hidden', panel.id !== MODE_META[nextMode].inspector));
-  if (nextMode === 'works') renderWorks();
+  if (nextMode === 'works') {
+    renderWorks();
+    updateStorageStats();
+    if (!workBackfillStarted) {
+      workBackfillStarted = true;
+      cacheExistingWorkImages().catch(() => {});
+    }
+  }
   closeMobileInspector();
   syncChatFocusMode();
   refreshIcons();
@@ -1675,7 +2853,7 @@ function saveApiKey() {
       return;
     }
   }
-  state.connection = { endpoint: connectionDraft.endpoint, customBaseUrl };
+  state.connection = { endpoint: connectionDraft.endpoint, customBaseUrl, lastVerifiedAt: 0 };
   if (value !== apiKey) {
     apiKey = value;
     writeStoredKey(apiKey);
@@ -1683,7 +2861,7 @@ function saveApiKey() {
   connectionStatus = 'idle';
   updateKeyStatus(false);
   closeKeyModal();
-  saveState();
+  saveState({ immediate: true });
   showToast('连接设置已保存。');
 }
 
@@ -1691,8 +2869,10 @@ function clearApiKey() {
   apiKey = '';
   writeStoredKey('');
   connectionStatus = 'idle';
+  state.connection.lastVerifiedAt = 0;
   updateKeyStatus(false);
   $('#api-key-input').value = '';
+  saveState({ immediate: true });
   closeKeyModal();
   showToast('本地 API 密钥已清除。');
 }
@@ -1706,11 +2886,11 @@ function toggleKeyVisibility() {
 }
 
 function startNewChat() {
-  const session = { id: createId('chat'), title: '新会话', createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
+  const session = { id: createId('chat'), title: '新会话', createdAt: Date.now(), updatedAt: Date.now(), messages: [], _messagesLoaded: true };
   state.chatSessions.unshift(session);
   state.activeChatId = session.id;
   editingMessageId = null;
-  saveState();
+  persistChatSession(session, { immediate: true });
   renderChat();
   showToast('已创建新会话。');
 }
@@ -1722,7 +2902,7 @@ function clearCurrentChat() {
   session.title = '新会话';
   session.updatedAt = Date.now();
   editingMessageId = null;
-  saveState();
+  persistChatSession(session, { immediate: true });
   renderChat();
 }
 
@@ -1780,9 +2960,31 @@ function renderChatImagePreview() {
 async function addChatImageFiles(fileList) {
   const file = Array.from(fileList || [])[0];
   if (!file) return;
-  if (!file.type.startsWith('image/')) { showToast('请选择图片文件。', 'error'); return; }
+  if (!isImageFile(file)) { showToast('请选择图片文件或 SVG 文件。', 'error'); return; }
   try {
-    chatImage = { name: file.name, dataUrl: await fileToDataUrl(file), source: 'upload' };
+    const dataUrl = await fileToDataUrl(file);
+    let blobRecord = null;
+    if (storageReady && storageRepository) {
+      try {
+        const storageBlob = isSvgFile(file) && file.type !== 'image/svg+xml' ? await dataUrlToBlob(dataUrl) : file;
+        blobRecord = await storageRepository.putBlob(storageBlob, file.name);
+      } catch (firstError) {
+        try {
+          await storageRepository.cleanupOrphanBlobs(runtimeBlobRefs());
+          const storageBlob = isSvgFile(file) && file.type !== 'image/svg+xml' ? await dataUrlToBlob(dataUrl) : file;
+          blobRecord = await storageRepository.putBlob(storageBlob, file.name);
+        } catch (retryError) {
+          blobRecord = null;
+        }
+      }
+    }
+    if (!blobRecord) {
+      const keepInMemory = window.confirm('IndexedDB 当前无法保存这张图片。\n\n选择“确定”：仅在当前页面临时使用，刷新后会丢失。\n选择“取消”：不添加这张图片。');
+      if (!keepInMemory) return;
+      showToast('图片仅保留在当前页面，刷新后会丢失。', 'error');
+    }
+    if (chatImage?.blobRef && chatImage.blobRef !== blobRecord?.id) storageRepository?.deleteBlob(chatImage.blobRef).catch(() => {});
+    chatImage = { name: file.name, dataUrl, blobRef: blobRecord?.id || '', mimeType: isSvgFile(file) ? 'image/svg+xml' : (file.type || 'image/*'), source: 'upload', volatile: !blobRecord };
     renderChatImagePreview();
     showToast('本地图片已添加。');
   } catch (error) {
@@ -1808,19 +3010,22 @@ function handleChatImagePreviewAction(event) {
     return;
   }
   if (action === 'remove') {
+    if (chatImage.blobRef) storageRepository?.deleteBlob(chatImage.blobRef).catch(() => {});
     chatImage = null;
     renderChatImagePreview();
   }
 }
 
 function clearChatImageInput() {
+  if (chatImage?.blobRef) storageRepository?.deleteBlob(chatImage.blobRef).catch(() => {});
   chatImage = null;
   $('#chat-image-file-input').value = '';
   renderChatImagePreview();
   $('#chat-vision-panel').hidden = true;
 }
 
-function resetChatImageInput() {
+function resetChatImageInput({ preserveBlob = false } = {}) {
+  if (!preserveBlob && chatImage?.blobRef) storageRepository?.deleteBlob(chatImage.blobRef).catch(() => {});
   chatImage = null;
   $('#chat-image-file-input').value = '';
   renderChatImagePreview();
@@ -1835,6 +3040,7 @@ function openChatWorkPicker() {
     onConfirm: (items) => {
       const item = items[0];
       if (!item) return;
+      if (chatImage?.blobRef) storageRepository?.deleteBlob(chatImage.blobRef).catch(() => {});
       chatImage = { name: item.title || '作品图片', url: item.url, source: 'work' };
       renderChatImagePreview();
     }
@@ -1844,6 +3050,7 @@ function openChatWorkPicker() {
 function openChatUrlModal() {
   openReferenceUrlModal({
     onConfirm: (url) => {
+      if (chatImage?.blobRef) storageRepository?.deleteBlob(chatImage.blobRef).catch(() => {});
       chatImage = { name: shortText(url, 30), url, source: 'link' };
       renderChatImagePreview();
     }
@@ -1851,12 +3058,12 @@ function openChatUrlModal() {
 }
 
 function isAcceptedImageSource(value) {
-  return value.startsWith('data:image/') || isHttpsUrl(value);
+  return isImageDataUrl(value) || isHttpsUrl(value);
 }
 
 function imageLabelForMessage(message, imageUrl) {
   if (message.imageName) return message.imageName;
-  if (imageUrl.startsWith('data:image/')) return '本地图片';
+  if (isImageDataUrl(imageUrl)) return '本地图片';
   try {
     const pathName = new URL(imageUrl).pathname.split('/').filter(Boolean).pop();
     return pathName ? shortText(decodeURIComponent(pathName), 54) : '对话图片';
@@ -1922,7 +3129,7 @@ function renderChat() {
       : !user && !isStreaming
         ? assistantMessageToolsMarkup(message.id)
         : '';
-    const editableImage = imageUrl && !imageUrl.startsWith('data:image/');
+    const editableImage = imageUrl && !isImageDataUrl(imageUrl);
     const preservedImage = imageUrl && !editableImage ? `<div class="message-edit-field"><span>图片</span><strong>${escapeHtml(imageLabelForMessage(message, imageUrl))}（保留）</strong></div>` : '';
     const editor = isEditing
       ? `<div class="message-edit-box">${image}<textarea class="message-edit-input" data-edit-input="${message.id}" rows="4">${escapeHtml(text)}</textarea>${editableImage ? `<label class="message-edit-field"><span>图片 URL</span><input data-edit-image="${message.id}" type="url" value="${escapeHtml(imageUrl)}"></label>` : preservedImage}<div class="message-edit-actions"><button class="text-button" type="button" data-message-action="cancel-edit" data-message-id="${message.id}">取消</button><button class="primary-action small-action" type="button" data-message-action="resend-edit" data-message-id="${message.id}"><i data-lucide="send" aria-hidden="true"></i>重发</button></div></div>`
@@ -1983,19 +3190,25 @@ async function handleChatSubmit(event) {
   const text = input.value.trim();
   const imageUrl = chatImage?.dataUrl || chatImage?.url || '';
   const imageName = chatImage?.name || '';
+  const imageBlobRef = chatImage?.blobRef || '';
+  const imageMimeType = chatImage?.mimeType || '';
   if (!text) { showToast('请输入文本提示词。', 'error'); input.focus(); return; }
   if (imageUrl && !isAcceptedImageSource(imageUrl)) { showToast('请使用本地图片，或填写公开可访问的 HTTPS 图片地址。', 'error'); return; }
   if (state.ui.chat.autoFullscreen && !isChatFullscreen()) toggleChatFullscreen();
   const session = getActiveSession();
   const content = buildChatContent(text, imageUrl);
+  if (imageBlobRef && content[1]?.image_url) {
+    content[1].image_url.ref = imageBlobRef;
+    content[1].image_url.mimeType = imageMimeType;
+  }
   session.messages.push({ id: createId('message'), role: 'user', content, imageName, createdAt: Date.now() });
   if (session.title === '新会话') session.title = shortText(text, 28);
   session.updatedAt = Date.now();
   input.value = '';
-  resetChatImageInput();
+  resetChatImageInput({ preserveBlob: Boolean(imageBlobRef) });
   $('#chat-vision-panel').hidden = true;
   focusChatWorkspace();
-  saveState();
+  await persistChatSession(session, { immediate: true });
   renderChat();
   await completeChat(session);
 }
@@ -2079,7 +3292,7 @@ async function completeChat(session) {
   } finally {
     activeRequest = null;
     session.updatedAt = Date.now();
-    saveState();
+    await persistChatSession(session, { immediate: true });
     $('#chat-send').disabled = false;
     $('#chat-send').setAttribute('aria-label', '发送消息');
     $('#chat-send').innerHTML = '<span>发送</span><i data-lucide="arrow-up" aria-hidden="true"></i>';
@@ -2160,7 +3373,7 @@ async function resendEditedMessage(messageId) {
   if (index === 0 || session.title === '新会话') session.title = shortText(text, 28);
   session.updatedAt = Date.now();
   editingMessageId = null;
-  saveState();
+  await persistChatSession(session, { immediate: true });
   renderChat();
   await completeChat(session);
 }
@@ -2172,7 +3385,7 @@ async function regenerateMessage(messageId) {
   const index = session.messages.findIndex((message) => message.id === messageId);
   if (index < 0) return;
   session.messages.splice(index, 1);
-  saveState();
+  await persistChatSession(session, { immediate: true });
   renderChat();
   await completeChat(session);
 }
@@ -2188,6 +3401,7 @@ function setImageMode(mode, persist = true) {
   }
   renderImageReferences();
   renderImagePromptGuide();
+  renderImagePromptShowcase();
   if (persist) saveState();
 }
 
@@ -2200,7 +3414,8 @@ function fileToDataUrl(file) {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
     reader.onerror = () => reject(new Error(`无法读取图片：${file.name}`));
-    reader.readAsDataURL(file);
+    const source = isSvgFile(file) && file.type !== 'image/svg+xml' ? new Blob([file], { type: 'image/svg+xml' }) : file;
+    reader.readAsDataURL(source);
   });
 }
 
@@ -2210,7 +3425,7 @@ async function addImageReferenceFiles(fileList) {
   const maxRefs = imageModeMaxRefs();
   const room = maxRefs - imageReferences.length;
   if (room <= 0) { showToast(`参考图已满 ${maxRefs} 张，先移除部分再上传。`, 'error'); return; }
-  const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+  const imageFiles = files.filter(isImageFile);
   const accepted = imageFiles.slice(0, room);
   for (const file of accepted) {
     try {
@@ -2818,7 +4033,7 @@ function renderVideoRefs() {
 function addVideoRefFile(kind, index, fileList) {
   const file = Array.from(fileList || [])[0];
   if (!file) return;
-  if (!file.type.startsWith('image/')) { showToast('请选择图片文件。', 'error'); return; }
+  if (!isImageFile(file)) { showToast('请选择图片文件或 SVG 文件。', 'error'); return; }
   fileToDataUrl(file)
     .then((dataUrl) => {
       setVideoRef(kind, index, { id: createId('ref'), name: file.name, dataUrl });
@@ -2912,6 +4127,113 @@ function renderImagePromptGuide() {
     <div class="prompt-structure-parts">${guide.parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('')}</div>
     <div class="prompt-structure-example">${escapeHtml(guide.example)}</div>`;
   refreshIcons();
+}
+
+async function loadPromptExamples() {
+  try {
+    const response = await fetch(`config/prompt-examples.json?v=2.23.1`, { cache: 'no-store' });
+    if (!response.ok) throw new Error('案例配置加载失败');
+    const value = await response.json();
+    if (!Array.isArray(value?.textToImage?.examples)) throw new Error('案例配置格式无效');
+    promptExamples = value;
+  } catch (error) {
+    promptExamples = PROMPT_EXAMPLES_FALLBACK;
+  }
+  renderImagePromptShowcase();
+}
+
+function resolvePromptExampleImage(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try { return new URL(raw, document.baseURI).href; } catch (error) { return ''; }
+}
+
+function renderImagePromptShowcase() {
+  const container = $('#image-prompt-showcase');
+  if (!container) return;
+  const visible = state.ui.image.mode === 'text';
+  container.classList.toggle('is-hidden', !visible);
+  if (!visible) return;
+  const config = promptExamples?.textToImage || PROMPT_EXAMPLES_FALLBACK.textToImage;
+  $('#prompt-showcase-title').textContent = config.title || PROMPT_EXAMPLES_FALLBACK.textToImage.title;
+  $('#prompt-showcase-description').textContent = config.description || PROMPT_EXAMPLES_FALLBACK.textToImage.description;
+  container.classList.toggle('is-collapsed', promptShowcaseCollapsed);
+  const toggle = $('[data-prompt-showcase-toggle]', container);
+  toggle?.setAttribute('aria-expanded', String(!promptShowcaseCollapsed));
+  toggle?.setAttribute('aria-label', promptShowcaseCollapsed ? '展开案例' : '收起案例');
+  toggle?.setAttribute('data-tooltip', promptShowcaseCollapsed ? '展开案例' : '收起案例');
+  const gallery = $('#prompt-showcase-gallery');
+  const examples = Array.isArray(config.examples) ? config.examples.filter((item) => item?.prompt) : [];
+  gallery.classList.toggle('has-selection', Boolean(selectedPromptExampleId));
+  gallery.innerHTML = examples.map((example) => {
+    const image = resolvePromptExampleImage(example.image);
+    const title = example.title || '提示词案例';
+    const selected = String(example.id || '') === selectedPromptExampleId;
+    return `<button class="prompt-example-card${selected ? ' is-selected' : ''}" type="button" data-prompt-example-id="${escapeHtml(example.id || '')}" aria-label="使用案例：${escapeHtml(title)}" aria-pressed="${selected}"><span class="prompt-example-title">${escapeHtml(title)}</span><span class="prompt-example-media">${image ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(example.alt || title)}" loading="lazy"><span class="prompt-example-fallback" hidden><i data-lucide="image-off" aria-hidden="true"></i></span>` : '<span class="prompt-example-fallback"><i data-lucide="image" aria-hidden="true"></i></span>'}</span></button>`;
+  }).join('');
+  $$('.prompt-example-card img', gallery).forEach((image) => image.addEventListener('error', () => { image.hidden = true; const fallback = $('.prompt-example-fallback', image.closest('.prompt-example-media')); if (fallback) fallback.hidden = false; }, { once: true }));
+  refreshIcons();
+}
+
+function updatePromptExampleSelection(example, sourceCard) {
+  if (!example) return;
+  const gallery = $('#prompt-showcase-gallery');
+  if (!gallery) return;
+  const cards = $$('.prompt-example-card', gallery);
+  const previousIndex = cards.findIndex((card) => card.classList.contains('is-selected'));
+  selectedPromptExampleId = String(example.id || '');
+  gallery.classList.add('has-selection');
+  cards.forEach((card) => {
+    const selected = card.dataset.promptExampleId === selectedPromptExampleId;
+    card.classList.toggle('is-selected', selected);
+    card.setAttribute('aria-pressed', String(selected));
+  });
+  const selectedCard = sourceCard?.isConnected
+    ? sourceCard
+    : cards.find((card) => card.dataset.promptExampleId === selectedPromptExampleId);
+  if (!selectedCard) return;
+  const selectedIndex = cards.indexOf(selectedCard);
+  const direction = previousIndex >= 0 && selectedIndex < previousIndex ? 'backward' : 'forward';
+  gallery.classList.remove('is-sliding-forward', 'is-sliding-backward');
+  void gallery.offsetWidth;
+  gallery.classList.add(`is-sliding-${direction}`);
+  const targetLeft = selectedCard.offsetLeft - ((gallery.clientWidth - selectedCard.offsetWidth) / 2);
+  const reduceMotion = state.ui.general.reducedMotion || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  gallery.scrollTo({ left: Math.max(0, targetLeft), behavior: reduceMotion ? 'auto' : 'smooth' });
+  window.setTimeout(() => gallery.classList.remove('is-sliding-forward', 'is-sliding-backward'), reduceMotion ? 20 : 440);
+}
+
+function fillPromptExample(example, sourceCard) {
+  const input = $('#image-prompt');
+  if (!input || !example?.prompt) return;
+  const apply = () => {
+    input.value = example.prompt;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+    updatePromptExampleSelection(example, sourceCard);
+    showToast('案例提示词已填入，可继续修改。');
+  };
+  if (input.value.trim()) {
+    showConfirmModal({ title: '替换当前提示词', message: '当前输入内容会被案例模板替换，是否继续？', confirmText: '确认替换', onConfirm: apply });
+  } else apply();
+}
+
+function handlePromptShowcaseAction(event) {
+  const toggle = event.target.closest('[data-prompt-showcase-toggle]');
+  if (toggle) {
+    promptShowcaseCollapsed = !promptShowcaseCollapsed;
+    const container = $('#image-prompt-showcase');
+    container.classList.toggle('is-collapsed', promptShowcaseCollapsed);
+    toggle.setAttribute('aria-expanded', String(!promptShowcaseCollapsed));
+    toggle.setAttribute('aria-label', promptShowcaseCollapsed ? '展开案例' : '收起案例');
+    toggle.setAttribute('data-tooltip', promptShowcaseCollapsed ? '展开案例' : '收起案例');
+    return;
+  }
+  const card = event.target.closest('[data-prompt-example-id]');
+  if (!card) return;
+  const config = promptExamples?.textToImage || PROMPT_EXAMPLES_FALLBACK.textToImage;
+  const example = (config.examples || []).find((item) => String(item.id || '') === card.dataset.promptExampleId);
+  fillPromptExample(example, card);
 }
 
 function handleImageStructureAction(event) {
@@ -3601,9 +4923,20 @@ function waitForVideoPoll(milliseconds, signal) {
 }
 
 function addWork(record) {
-  state.works = [{ id: createId('work'), ...record }, ...state.works].slice(0, WORKS_LIMIT);
-  saveState();
+  const work = { id: createId('work'), ...record };
+  const limit = getStoragePolicy().workRetention;
+  const removed = [work, ...state.works].slice(limit);
+  state.works = [work, ...state.works].slice(0, limit);
+  removed.forEach((item) => {
+    const objectUrl = workMediaObjectUrls.get(item.id);
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    workMediaObjectUrls.delete(item.id);
+    workMediaRuntime.delete(item.id);
+    storageRepository?.deleteCachedWorkMedia(item.id).catch(() => {});
+  });
+  saveState({ immediate: true });
   renderWorks();
+  if (work.kind === 'image' && state.ui.storage.cacheImages) cacheWorkMedia(work, { silent: true });
 }
 
 function normalizeWorkGeneration(value) {
@@ -3693,7 +5026,7 @@ function analyzeImportedWorks(records) {
   const uniqueRecords = [...unique.values()].sort((a, b) => b.createdAt - a.createdAt);
   const currentDuplicates = uniqueRecords.filter((work) => currentKeys.has(importedWorkKey(work))).length;
   const candidates = uniqueRecords.filter((work) => !currentKeys.has(importedWorkKey(work)));
-  const available = Math.max(0, WORKS_LIMIT - state.works.length);
+  const available = Math.max(0, getStoragePolicy().workRetention - state.works.length);
   const additions = candidates.slice(0, available);
   return {
     additions,
@@ -3736,8 +5069,9 @@ function mergeImportedWorks(records) {
   const imported = analysis.additions.map((work) => ({ id: createId('work'), ...work }));
   if (imported.length) {
     state.works = [...state.works, ...imported].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
-    saveState();
+    saveState({ immediate: true });
     renderWorks();
+    if (state.ui.storage.cacheImages) cacheExistingWorkImages().catch(() => {});
   }
   return { imported: imported.length, truncated: analysis.truncated };
 }
@@ -3822,6 +5156,9 @@ function renderWorks() {
   $('#inspector-work-total').textContent = String(allCount);
   $('#inspector-image-total').textContent = String(imageCount);
   $('#inspector-video-total').textContent = String(videoCount);
+  const cachedCount = [...workMediaRuntime.values()].filter((item) => item.status === 'ready').length;
+  const cacheLabel = $('#works-cache-summary');
+  if (cacheLabel) cacheLabel.textContent = `${cachedCount} 个本地缓存`;
   $$('.filter-tab').forEach((button) => button.classList.toggle('is-active', button.dataset.workFilter === activeWorkFilter));
   if (!works.length) {
     $('#works-grid').innerHTML = '<div class="works-empty"><i data-lucide="archive" aria-hidden="true"></i><span>作品库还没有记录</span><small>完成一次图像或视频生成后，结果会出现在这里。</small></div>';
@@ -3829,10 +5166,17 @@ function renderWorks() {
     return;
   }
   $('#works-grid').innerHTML = works.map((work) => {
-    const url = safeMediaUrl(work.url);
+    const runtime = workMediaRuntime.get(work.id);
+    const remoteUrl = safeMediaUrl(work.url);
+    const url = runtime?.status === 'ready' ? runtime.url : remoteUrl;
     const isVideo = work.kind === 'video';
-    const media = url ? (isVideo ? `<video muted preload="metadata" src="${escapeHtml(url)}"></video>` : `<img src="${escapeHtml(url)}" alt="${escapeHtml(work.title)}">`) : '<div class="output-empty"><i data-lucide="image-off" aria-hidden="true"></i></div>';
-    return `<article class="work-card" data-work-id="${work.id}"><div class="work-card-media">${media}<span class="work-card-type"><i data-lucide="${isVideo ? 'clapperboard' : 'image'}" aria-hidden="true"></i>${isVideo ? '视频' : '图像'}</span></div><div class="work-card-body"><div class="work-card-title" title="${escapeHtml(work.title)}">${escapeHtml(work.title)}</div><div class="work-card-meta"><span>${escapeHtml(work.meta || '--')}</span><span>${formatDate(work.createdAt)}</span></div><div class="work-card-actions"><button type="button" data-work-action="open" data-work-id="${work.id}"><i data-lucide="external-link" aria-hidden="true"></i>打开</button><button type="button" data-work-action="download" data-work-id="${work.id}"><i data-lucide="download" aria-hidden="true"></i>下载</button><button type="button" data-work-action="delete" data-work-id="${work.id}" aria-label="删除作品" data-tooltip="删除作品"><i data-lucide="trash-2" aria-hidden="true"></i></button></div></div></article>`;
+    const unavailable = runtime?.status === 'unavailable' || !remoteUrl;
+    const media = !unavailable && url ? (isVideo ? `<video muted preload="metadata" src="${escapeHtml(url)}"></video>` : `<img src="${escapeHtml(url)}" alt="${escapeHtml(work.title)}">`) : '';
+    const cacheStatus = runtime?.status === 'ready' ? '已缓存' : runtime?.status === 'loading' ? `缓存中${runtime.progress ? ` ${runtime.progress}%` : ''}` : runtime?.status === 'cache-failed' ? '缓存失败，使用远程地址' : unavailable ? '媒体不可用' : '远程地址';
+    const cacheAction = runtime?.status === 'ready' ? 'clear-cache' : 'recache';
+    const cacheLabelText = runtime?.status === 'ready' ? '清除缓存' : (isVideo ? '缓存视频' : '缓存图片');
+    const fallback = unavailable ? `<div class="work-media-unavailable"><i data-lucide="image-off" aria-hidden="true"></i><strong>媒体地址失效</strong><small>${escapeHtml(runtime?.error || '无法加载远程媒体')}</small></div>` : '';
+    return `<article class="work-card${unavailable ? ' is-media-failed' : ''}" data-work-id="${work.id}"><div class="work-card-media">${fallback || media}<span class="work-card-type"><i data-lucide="${isVideo ? 'clapperboard' : 'image'}" aria-hidden="true"></i>${isVideo ? '视频' : '图像'}</span></div><div class="work-card-body"><div class="work-card-title" title="${escapeHtml(work.title)}">${escapeHtml(work.title)}</div><div class="work-card-meta"><span>${escapeHtml(work.meta || '--')}</span><span data-work-cache-progress="${escapeHtml(work.id)}">${escapeHtml(cacheStatus)}</span></div><div class="work-card-actions"><button type="button" data-work-action="open" data-work-id="${work.id}"><i data-lucide="external-link" aria-hidden="true"></i>打开</button><button type="button" data-work-action="download" data-work-id="${work.id}"><i data-lucide="download" aria-hidden="true"></i>下载</button><button type="button" data-work-action="${cacheAction}" data-work-id="${work.id}"${runtime?.status === 'loading' ? ' disabled' : ''}><i data-lucide="${cacheAction === 'clear-cache' ? 'database-zap' : 'hard-drive-download'}" aria-hidden="true"></i>${runtime?.status === 'loading' ? '缓存中' : cacheLabelText}</button><button type="button" data-work-action="delete" data-work-id="${work.id}" aria-label="删除作品" data-tooltip="删除作品"><i data-lucide="trash-2" aria-hidden="true"></i></button></div></div></article>`;
   }).join('');
   prepareWorkMedia();
   refreshIcons();
@@ -3843,8 +5187,18 @@ function prepareWorkMedia() {
     const showUnavailable = () => {
       const container = media.closest('.work-card-media');
       if (!container || container.querySelector('.work-media-unavailable')) return;
+      const work = state.works.find((item) => item.id === media.closest('.work-card')?.dataset.workId);
+      const runtime = work && workMediaRuntime.get(work.id);
+      const remoteUrl = work && safeMediaUrl(work.url);
+      if (work && runtime?.status === 'ready' && remoteUrl && media.src !== remoteUrl) {
+        workMediaRuntime.set(work.id, { status: 'cache-failed', error: '本地缓存无法读取，已回退远程地址', record: runtime.record });
+        media.addEventListener('error', showUnavailable, { once: true });
+        media.src = remoteUrl;
+        return;
+      }
+      if (work) workMediaRuntime.set(work.id, { status: 'unavailable', error: '远程媒体地址无法访问' });
       media.hidden = true;
-      container.insertAdjacentHTML('afterbegin', '<div class="work-media-unavailable"><i data-lucide="image-off" aria-hidden="true"></i><span>媒体不可用</span></div>');
+      container.insertAdjacentHTML('afterbegin', '<div class="work-media-unavailable"><i data-lucide="image-off" aria-hidden="true"></i><strong>媒体地址失效</strong><small>可尝试重新缓存或打开原地址</small></div>');
       refreshIcons();
     };
     media.addEventListener('error', showUnavailable, { once: true });
@@ -3852,10 +5206,250 @@ function prepareWorkMedia() {
   });
 }
 
+function formatStorageBytes(value) {
+  const bytes = Math.max(0, Number(value || 0));
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(bytes < 10 * 1024 ** 2 ? 1 : 0)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+async function updateStorageStats({ announce = false } = {}) {
+  const status = $('#storage-engine-status');
+  if (!status) return;
+  let repositoryStats = { sessions: state.chatSessions.length, messages: state.chatSessions.reduce((total, session) => total + session.messages.length, 0), attachments: 0, attachmentBytes: 0 };
+  if (storageReady && storageRepository) {
+    try { repositoryStats = await storageRepository.stats(); } catch (error) { reportStorageFailure(); }
+  }
+  let migrationMeta = null;
+  if (storageReady && storageRepository) {
+    try { migrationMeta = await storageRepository.getMeta('schema-migration'); } catch (error) { migrationMeta = null; }
+  }
+  const engineLabels = {
+    checking: '正在检查',
+    migrating: '正在迁移',
+    ready: storageHealthReport && !storageHealthReport.ok ? '需要修复' : 'IndexedDB 已启用',
+    unavailable: '存储不可用'
+  };
+  status.textContent = engineLabels[storageEngineState] || '存储不可用';
+  status.classList.toggle('is-error', !storageReady || Boolean(storageHealthReport && !storageHealthReport.ok));
+  $('#storage-record-count').textContent = `${repositoryStats.sessions} / ${repositoryStats.messages}`;
+  $('#storage-attachment-count').textContent = `${repositoryStats.attachments} 个 / ${formatStorageBytes(repositoryStats.attachmentBytes)}`;
+  $('#storage-work-media-count').textContent = `${repositoryStats.workMedia || 0} 个 / ${formatStorageBytes(repositoryStats.workMediaBytes || 0)}`;
+  $('#storage-database-version').textContent = storageRepository
+    ? `v${storageRepository.database.version} / ${migrationMeta?.completedAt ? formatFullDate(migrationMeta.completedAt) : '迁移时间未知'}`
+    : '不可用';
+  let usageLabel = '浏览器未提供估算';
+  let percent = 0;
+  if (navigator.storage?.estimate) {
+    try {
+      const estimate = await navigator.storage.estimate();
+      const usage = Number(estimate.usage || 0);
+      const quota = Number(estimate.quota || 0);
+      percent = quota ? Math.min(100, usage / quota * 100) : 0;
+      usageLabel = quota ? `${formatStorageBytes(usage)} / ${formatStorageBytes(quota)}` : formatStorageBytes(usage);
+    } catch (error) {
+      usageLabel = '浏览器未提供估算';
+    }
+  }
+  $('#storage-usage').textContent = usageLabel;
+  $('#storage-meter-fill').style.width = `${percent}%`;
+  let persistedLabel = '持久存储状态未知';
+  if (navigator.storage?.persisted) {
+    try { persistedLabel = await navigator.storage.persisted() ? '已获得持久存储' : '尚未获得持久存储'; } catch (error) { persistedLabel = '持久存储状态未知'; }
+  }
+  $('#storage-persistence-status').textContent = persistedLabel;
+  if (announce) showToast('存储统计已刷新。');
+}
+
+async function requestPersistentStorage() {
+  if (!navigator.storage?.persist) { showToast('当前浏览器不支持持久存储申请。', 'error'); return; }
+  try {
+    const granted = await navigator.storage.persist();
+    await updateStorageStats();
+    showToast(granted ? '已申请浏览器持久存储。' : '浏览器未授予持久存储权限。', granted ? 'info' : 'error');
+  } catch (error) {
+    showToast('持久存储申请失败。', 'error');
+  }
+}
+
+async function clearCachedMediaUi() {
+  if (!storageReady || !storageRepository) { showToast('IndexedDB 当前不可用，无法清理缓存。', 'error'); return; }
+  showConfirmModal({
+    title: '清理失效作品缓存',
+    message: '将删除已标记失败的作品媒体缓存，不会删除作品记录或远程地址。',
+    confirmText: '确认清理',
+    onConfirm: async () => {
+      cancelAllWorkCacheJobs();
+      const records = await storageRepository.clearCachedWorkMedia({ failedOnly: true });
+      records.forEach((record) => { suppressWorkCache(record.workId); const objectUrl = workMediaObjectUrls.get(record.workId); if (objectUrl) URL.revokeObjectURL(objectUrl); workMediaObjectUrls.delete(record.workId); workMediaRuntime.delete(record.workId); });
+      renderWorks();
+      await updateStorageStats();
+      showToast(records.length ? `已清理 ${records.length} 个失效缓存。` : '没有发现失效缓存。');
+    }
+  });
+}
+
+async function checkStorageHealthUi() {
+  if (!storageReady || !storageRepository) { showToast('IndexedDB 当前不可用，无法检查。', 'error'); return; }
+  try {
+    storageHealthReport = await storageRepository.checkStorageHealth();
+    const issues = storageHealthReport.issueCount;
+    $('#repair-storage').disabled = issues === 0;
+    const summary = $('#storage-health-summary');
+    const structural = storageHealthReport.missingStores.length + Number(storageHealthReport.messageIndexMissing) + Number(storageHealthReport.schemaMismatch);
+    summary.hidden = false;
+    summary.classList.toggle('is-error', issues > 0);
+    summary.innerHTML = issues
+      ? `<strong>发现 ${issues} 项问题</strong><span>孤立消息 ${storageHealthReport.messageOrphans.length} · 缺失附件引用 ${storageHealthReport.missingBlobRefs.length} · 孤儿附件 ${storageHealthReport.blobOrphans.length} · 作品缓存 ${storageHealthReport.workMediaOrphans.length + storageHealthReport.workMediaMismatch.length} · 会话计数 ${storageHealthReport.sessionCountMismatch.length} · 数据库结构 ${structural}</span>`
+      : '<strong>存储状态正常</strong><span>对象仓库、引用关系、作品缓存和会话计数均通过检查。</span>';
+    await updateStorageStats();
+    showToast(issues ? `发现 ${issues} 项存储问题，可点击“修复存储”。` : '存储检查通过，未发现问题。', issues ? 'error' : 'info');
+  } catch (error) {
+    showToast('存储健康检查失败。', 'error');
+  }
+}
+
+async function repairStorageUi() {
+  if (!storageReady || !storageRepository) return;
+  showConfirmModal({
+    title: '修复本地存储',
+    message: '将删除孤立消息、孤儿附件和没有对应作品的媒体缓存，不会删除作品记录或 API 密钥。',
+    confirmText: '确认修复',
+    onConfirm: async () => {
+      try {
+        const result = await storageRepository.repairStorage();
+        const removedRefs = new Set(result.removedBlobReferenceIds || []);
+        if (removedRefs.size) {
+          state.chatSessions.forEach((session) => {
+            session.messages = session.messages.map((message) => Array.isArray(message.content)
+              ? { ...message, content: message.content.filter((part) => !part?.image_url?.ref || !removedRefs.has(part.image_url.ref)) }
+              : message);
+            session.messageCount = session.messages.length;
+          });
+          if (chatImage?.blobRef && removedRefs.has(chatImage.blobRef)) chatImage = null;
+          renderChatImagePreview();
+          renderChat();
+        }
+        storageHealthReport = null;
+        $('#repair-storage').disabled = true;
+        await hydrateWorkMediaRuntime();
+        renderWorks();
+        await updateStorageStats();
+        saveState({ immediate: true });
+        const summary = $('#storage-health-summary');
+        summary.hidden = false;
+        summary.classList.remove('is-error');
+        summary.innerHTML = `<strong>修复完成</strong><span>清理 ${result.removedMessages} 条孤立消息、${result.removedBlobReferences} 个失效附件引用、${result.removedBlobs} 个孤儿附件、${result.removedWorkMedia} 个作品缓存，修正 ${result.correctedSessions} 个会话计数，释放 ${formatStorageBytes(result.releasedBytes)}。</span>`;
+        showToast(`存储修复完成，释放 ${formatStorageBytes(result.releasedBytes)}。`);
+      } catch (error) { showToast('存储修复失败，请稍后重试。', 'error'); }
+    }
+  });
+}
+
+async function testApiConnection() {
+  if (!apiKey) { showToast('请先配置 API 密钥。', 'error'); return; }
+  const button = $('#test-api-connection');
+  button.disabled = true;
+  $('#settings-connection-status').textContent = '当前状态：测试中';
+  try {
+    await fetchAgnes('/v1/models', { method: 'GET' }, CONFIG.timeouts.poll);
+    updateKeyStatus(true);
+    showToast('连接测试成功。');
+  } catch (error) {
+    const authError = error.status === 401 || error.status === 403;
+    if (!authError) connectionStatus = 'idle';
+    updateKeyStatus(false, authError);
+    $('#settings-connection-status').textContent = `当前状态：${error.status === 401 || error.status === 403 ? '认证失败' : '连接失败'}`;
+    showToast(error.message || '连接测试失败。', 'error');
+  } finally { button.disabled = false; }
+}
+
+async function cleanupStorageAttachments() {
+  if (!storageReady || !storageRepository) {
+    showToast('IndexedDB 当前不可用，无法清理附件。', 'error');
+    return;
+  }
+  const button = $('#cleanup-storage');
+  button.disabled = true;
+  try {
+    const result = await storageRepository.cleanupOrphanBlobs(runtimeBlobRefs());
+    await updateStorageStats();
+    showToast(result.removed ? `已清理 ${result.removed} 个孤儿附件，释放 ${formatStorageBytes(result.bytes)}。` : '没有发现孤儿附件。');
+  } catch (error) {
+    showToast('孤儿附件清理失败，请稍后重试。', 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function requestStorageAttachmentCleanup() {
+  showConfirmModal({
+    title: '清理孤儿附件',
+    message: '将删除没有任何聊天消息引用的 IndexedDB 附件，不会删除会话、消息或作品记录。',
+    confirmText: '确认清理',
+    onConfirm: cleanupStorageAttachments
+  });
+}
+
+function requestHistoryCompaction() {
+  const policy = getStoragePolicy();
+  const sortedSessions = [...state.chatSessions].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  const keepIds = new Set(sortedSessions.slice(0, policy.sessionRetention).map((session) => session.id));
+  if (state.activeChatId) keepIds.add(state.activeChatId);
+  const removableSessions = state.chatSessions.filter((session) => !keepIds.has(session.id));
+  const removableWorks = Math.max(0, state.works.length - policy.workRetention);
+  if (!removableSessions.length && !removableWorks) {
+    showToast(`历史已在当前范围内：最多 ${policy.sessionRetention} 个最近会话和 ${policy.workRetention} 条作品。`);
+    return;
+  }
+  showConfirmModal({
+    title: '压缩本地历史',
+    message: `将保留当前会话、最近 ${policy.sessionRetention} 个会话和最近 ${policy.workRetention} 条作品。本次会删除 ${removableSessions.length} 个较早会话${removableWorks ? `及 ${removableWorks} 条较早作品` : ''}，随后清理无引用附件。`,
+    confirmText: '确认压缩',
+    onConfirm: () => compactHistory(removableSessions.map((session) => session.id))
+  });
+}
+
+async function compactHistory(sessionIds) {
+  const policy = getStoragePolicy();
+  const removeSet = new Set(sessionIds);
+  state.chatSessions = state.chatSessions.filter((session) => !removeSet.has(session.id));
+  const sortedWorks = [...state.works].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+  const removedWorks = sortedWorks.slice(policy.workRetention);
+  state.works = sortedWorks.slice(0, policy.workRetention);
+  if (!state.chatSessions.some((session) => session.id === state.activeChatId)) state.activeChatId = state.chatSessions[0]?.id || null;
+  if (storageReady && storageRepository) {
+    try {
+      for (const sessionId of sessionIds) await storageRepository.deleteSession(sessionId);
+      for (const work of removedWorks) await storageRepository.deleteCachedWorkMedia(work.id);
+      await storageRepository.cleanupOrphanBlobs(runtimeBlobRefs());
+    } catch (error) {
+      showToast('部分 IndexedDB 历史未能清理，请重试。', 'error');
+    }
+  }
+  ensureChatSession();
+  removedWorks.forEach((work) => {
+    const objectUrl = workMediaObjectUrls.get(work.id);
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    workMediaObjectUrls.delete(work.id);
+    workMediaRuntime.delete(work.id);
+  });
+  saveState({ immediate: true });
+  renderChat();
+  renderWorks();
+  await updateStorageStats();
+  showToast(`历史压缩完成，已移除 ${sessionIds.length} 个较早会话。`);
+}
+
 function clearWorks() {
   if (!state.works.length) { showToast('作品库已经为空。'); return; }
+  const previousWorks = state.works;
   state.works = [];
-  saveState();
+  previousWorks.forEach((work) => { const objectUrl = workMediaObjectUrls.get(work.id); if (objectUrl) URL.revokeObjectURL(objectUrl); storageRepository?.deleteCachedWorkMedia(work.id).catch(() => {}); });
+  workMediaObjectUrls.clear();
+  workMediaRuntime.clear();
+  saveState({ immediate: true });
   renderWorks();
   showToast('作品记录已清除。');
 }
@@ -3866,9 +5460,9 @@ function handleWorkAction(event) {
     const filtered = state.works.filter((work) => activeWorkFilter === 'all' || work.kind === activeWorkFilter);
     const work = filtered.find((item) => item.id === mediaArea.closest('.work-card')?.dataset.workId);
     if (!work) return;
-    const items = filtered.map(previewItemFromWork).filter((item) => item.url);
+    const items = filtered.map(previewItemFromWork);
     if (!items.length) return;
-    const index = Math.max(0, items.findIndex((item) => item.url === safeMediaUrl(work.url)));
+    const index = Math.max(0, items.findIndex((item) => item.workId === work.id));
     openMediaPreview({ items, index });
     return;
   }
@@ -3883,14 +5477,38 @@ function handleWorkAction(event) {
       confirmText: '确认删除',
       onConfirm: () => {
         state.works = state.works.filter((item) => item.id !== work.id);
-        saveState();
+        const objectUrl = workMediaObjectUrls.get(work.id);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        workMediaObjectUrls.delete(work.id);
+        workMediaRuntime.delete(work.id);
+        storageRepository?.deleteCachedWorkMedia(work.id).catch(() => {});
+        saveState({ immediate: true });
         renderWorks();
       }
     });
     return;
   }
   if (button.dataset.workAction === 'open') window.open(work.url, '_blank', 'noopener,noreferrer');
-  if (button.dataset.workAction === 'download') downloadAsset(work.url, `${work.kind === 'video' ? 'agnes-video' : 'agnes-image'}-${work.id}`, work.kind);
+  if (button.dataset.workAction === 'download') downloadAsset(workMediaRuntime.get(work.id)?.url || work.url, `${work.kind === 'video' ? 'agnes-video' : 'agnes-image'}-${work.id}`, work.kind);
+  if (button.dataset.workAction === 'cache' || button.dataset.workAction === 'recache') cacheWorkMedia(work, { force: true });
+  if (button.dataset.workAction === 'clear-cache') {
+    showConfirmModal({
+      title: '清除作品本地缓存',
+      message: '只会删除本地媒体副本，作品记录和远程地址会继续保留。',
+      confirmText: '确认清除',
+      onConfirm: async () => {
+        cancelWorkCacheJob(work.id);
+        suppressWorkCache(work.id);
+        await storageRepository?.deleteCachedWorkMedia(work.id);
+        const objectUrl = workMediaObjectUrls.get(work.id);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        workMediaObjectUrls.delete(work.id);
+        workMediaRuntime.delete(work.id);
+        renderWorks();
+        updateStorageStats();
+      }
+    });
+  }
 }
 
 $('#video-result')?.addEventListener('click', (event) => {

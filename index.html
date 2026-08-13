@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#111414">
     <meta name="description" content="Agnes 创作工作台">
-    <title>Agnes 创作工作台 v2.20.6</title>
+    <title>Agnes 创作工作台 v2.23.1</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=2.20.6">
+    <link rel="stylesheet" href="styles.css?v=2.23.1">
     <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
-    <script defer src="app.js?v=2.20.6"></script>
+    <script defer src="app.js?v=2.23.1"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -70,6 +70,9 @@
             <span class="breadcrumb-current" id="mode-breadcrumb">文本对话</span>
           </div>
           <div class="topbar-actions">
+            <button class="icon-button" type="button" id="workspace-button" aria-label="打开本地工作区" data-tooltip="本地工作区"><i data-lucide="layout-dashboard" aria-hidden="true"></i></button>
+            <button class="icon-button" type="button" id="help-button" aria-label="打开帮助中心" data-tooltip="帮助中心"><i data-lucide="circle-help" aria-hidden="true"></i></button>
+            <button class="icon-button" type="button" id="settings-button" aria-label="打开应用设置" data-tooltip="应用设置"><i data-lucide="settings-2" aria-hidden="true"></i></button>
             <button class="api-status" id="api-status" type="button" aria-live="polite" aria-label="打开连接设置">
               <span class="status-light" id="api-status-dot" aria-hidden="true"></span>
               <span class="api-status-copy"><span id="api-status-endpoint">国际站</span><span class="api-status-separator" aria-hidden="true">·</span><span id="api-status-text">未配置</span></span>
@@ -130,7 +133,7 @@
                         <i data-lucide="upload" aria-hidden="true"></i>
                         <span>拖入或选择本地图片</span>
                         <small>图片会转换为 Data URI，仅发送到 Agnes</small>
-                        <input id="chat-image-file-input" type="file" accept="image/*">
+                        <input id="chat-image-file-input" type="file" accept="image/*,.svg,image/svg+xml">
                       </label>
                       <button class="chat-source-button" type="button" id="chat-pick-work"><i data-lucide="folder-open" aria-hidden="true"></i><span>作品集</span></button>
                       <button class="chat-source-button" type="button" id="chat-pick-link"><i data-lucide="link" aria-hidden="true"></i><span>图片链接</span></button>
@@ -175,6 +178,13 @@
                     <button class="segment-button" type="button" role="tab" data-image-mode="image">图生图</button>
                     <button class="segment-button" type="button" role="tab" data-image-mode="composite">多图合成</button>
                   </div>
+                  <section class="prompt-showcase" id="image-prompt-showcase" aria-label="文生图案例">
+                    <div class="prompt-showcase-head">
+                      <div><h2 id="prompt-showcase-title">给你的下一幅杰作，留一个位置。</h2><p id="prompt-showcase-description">选择一个模板作为起点，再在下方提示词调成你的表达。</p></div>
+                      <button class="icon-button small prompt-showcase-toggle" type="button" data-prompt-showcase-toggle aria-expanded="true" aria-label="收起案例" data-tooltip="收起案例"><i data-lucide="chevron-up" aria-hidden="true"></i></button>
+                    </div>
+                    <div class="prompt-showcase-gallery" id="prompt-showcase-gallery" aria-label="提示词案例列表"></div>
+                  </section>
                   <div class="field-block">
                     <label class="field-label" for="image-prompt"><span>提示词</span><span class="field-required">必填</span></label>
                     <textarea id="image-prompt" class="large-textarea" rows="7" placeholder="主体、环境、风格、光照、构图、质量要求"></textarea>
@@ -216,7 +226,7 @@
                       <i data-lucide="upload-cloud" aria-hidden="true"></i>
                       <span id="image-drop-zone-text">拖入图片或点击选择</span>
                       <small>本地文件会转换为 Data URI</small>
-                      <input id="image-file-input" type="file" accept="image/*" multiple>
+                      <input id="image-file-input" type="file" accept="image/*,.svg,image/svg+xml" multiple>
                     </label>
                     <div class="reference-grid" id="image-reference-grid"></div>
                   </div>
@@ -297,7 +307,7 @@
                   <div class="video-inputs is-hidden" id="video-image-inputs">
                     <div class="video-ref-head"><span>首帧参考图</span><span class="mono" id="video-image-ref-count">0 / 1</span></div>
                     <div class="video-ref-grid" id="video-image-ref-grid"></div>
-                    <input id="video-image-file-input" type="file" accept="image/*" hidden>
+                    <input id="video-image-file-input" type="file" accept="image/*,.svg,image/svg+xml" hidden>
                   </div>
                   <div class="video-inputs is-hidden" id="video-keyframe-inputs">
                     <div class="video-ref-head"><span>关键帧</span><span class="mono">2 张</span></div>
@@ -305,7 +315,7 @@
                       <div class="video-ref-card"><span class="video-ref-badge">01</span><div class="video-ref-slot" id="video-keyframe-slot-0"></div></div>
                       <div class="video-ref-card"><span class="video-ref-badge">02</span><div class="video-ref-slot" id="video-keyframe-slot-1"></div></div>
                     </div>
-                    <input id="video-keyframe-file-input" type="file" accept="image/*" hidden>
+                    <input id="video-keyframe-file-input" type="file" accept="image/*,.svg,image/svg+xml" hidden>
                   </div>
                   <div class="control-footer video-footer">
                     <span class="control-note" id="video-estimate"><i data-lucide="clock-3" aria-hidden="true"></i> 约 5 秒 / 121 帧</span>
@@ -491,10 +501,49 @@
       </main>
     </div>
 
-    <div class="modal-backdrop" id="key-modal" hidden>
-      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="key-modal-title">
-         <div class="modal-topline"><span class="section-kicker"><span class="signal-line"></span> 连接设置</span><button class="icon-button small" type="button" id="close-key-settings" aria-label="关闭设置" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button></div>
-         <h2 id="key-modal-title">连接 Agnes API</h2>
+    <div class="modal-backdrop settings-backdrop" id="settings-modal" hidden>
+      <section class="modal-panel settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+         <div class="modal-topline"><span class="section-kicker"><span class="signal-line"></span> 应用设置</span><button class="icon-button small" type="button" id="close-key-settings" aria-label="关闭设置" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button></div>
+         <h2 id="settings-modal-title">应用设置</h2>
+         <nav class="settings-tabs" role="tablist" aria-label="设置分区">
+           <button class="settings-tab is-active" type="button" role="tab" id="settings-tab-general" aria-selected="true" data-settings-section="general">通用</button>
+           <button class="settings-tab" type="button" role="tab" id="settings-tab-storage" aria-selected="false" data-settings-section="storage">存储与数据</button>
+           <button class="settings-tab" type="button" role="tab" id="settings-tab-connection" aria-selected="false" data-settings-section="connection">连接</button>
+         </nav>
+         <div class="settings-section" data-settings-panel="general">
+           <div class="settings-section-heading"><span>界面偏好</span><span class="mono">当前设备</span></div>
+           <label class="field-label" for="settings-theme"><span>主题</span><span class="mono">外观</span></label>
+           <select id="settings-theme"><option value="dark">深色</option><option value="light">浅色</option><option value="system">跟随系统</option></select>
+           <label class="field-label" for="settings-density"><span>界面密度</span><span class="mono">布局</span></label>
+           <select id="settings-density"><option value="comfortable">舒适</option><option value="compact">紧凑</option></select>
+           <label class="toggle-row" for="settings-reduced-motion"><span><strong>减少动效</strong><small>降低卡片和面板过渡动画</small></span><input id="settings-reduced-motion" type="checkbox"><span class="toggle-ui" aria-hidden="true"></span></label>
+           <label class="toggle-row" for="settings-auto-fullscreen"><span><strong>对话自动全屏</strong><small>发送消息后自动进入专注视图</small></span><input id="settings-auto-fullscreen" type="checkbox"><span class="toggle-ui" aria-hidden="true"></span></label>
+           <label class="field-label" for="settings-autosave"><span>自动保存</span><span class="mono">频率</span></label>
+           <select id="settings-autosave"><option value="standard">标准（约 300–500ms）</option><option value="low">低频（约 2–3 秒）</option></select>
+           <div class="settings-actions"><button class="text-button" type="button" id="reset-general-settings"><i data-lucide="rotate-ccw" aria-hidden="true"></i>恢复默认设置</button></div>
+         </div>
+         <div class="settings-section is-hidden" data-settings-panel="storage">
+           <div class="settings-section-heading"><span>浏览器存储</span><button class="storage-refresh" type="button" id="refresh-storage-stats" aria-label="刷新存储统计" data-tooltip="刷新统计"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
+           <div class="storage-status-row"><span>存储引擎</span><strong id="storage-engine-status">正在检查</strong></div>
+           <div class="storage-meter" aria-hidden="true"><span id="storage-meter-fill"></span></div>
+           <div class="storage-status-row"><span>浏览器用量</span><strong id="storage-usage">正在估算</strong></div>
+           <div class="storage-status-row"><span>对话 / 消息</span><strong id="storage-record-count">0 / 0</strong></div>
+           <div class="storage-status-row"><span>聊天附件</span><strong id="storage-attachment-count">0 个 / 0 B</strong></div>
+           <div class="storage-status-row"><span>作品缓存</span><strong id="storage-work-media-count">0 个 / 0 B</strong></div>
+           <div class="storage-status-row"><span>数据库 / 迁移</span><strong id="storage-database-version">v2 / 未知</strong></div>
+           <div class="storage-status-row"><span>持久存储</span><strong id="storage-persistence-status">正在检查</strong></div>
+           <label class="toggle-row" for="settings-cache-images"><span><strong>自动缓存生成图片</strong><small>图片优先从本地副本显示</small></span><input id="settings-cache-images" type="checkbox"><span class="toggle-ui" aria-hidden="true"></span></label>
+           <div class="storage-policy-grid">
+             <label for="settings-session-retention"><span>保留会话</span><input id="settings-session-retention" type="number" min="5" max="100" step="1" inputmode="numeric"><small>5–100 个</small></label>
+             <label for="settings-work-retention"><span>保留作品</span><input id="settings-work-retention" type="number" min="10" max="100" step="1" inputmode="numeric"><small>10–100 条</small></label>
+           </div>
+           <div class="storage-manager-actions"><button class="text-button" type="button" id="request-persistent-storage"><i data-lucide="shield-check" aria-hidden="true"></i>申请持久存储</button><button class="text-button" type="button" id="cleanup-storage"><i data-lucide="eraser" aria-hidden="true"></i>清理孤儿附件</button><button class="text-button" type="button" id="clear-cached-media"><i data-lucide="trash-2" aria-hidden="true"></i>清理失效缓存</button><button class="text-button" type="button" id="compact-history"><i data-lucide="archive-restore" aria-hidden="true"></i>压缩历史</button><button class="text-button" type="button" id="check-storage-health"><i data-lucide="stethoscope" aria-hidden="true"></i>检查存储健康</button><button class="text-button" type="button" id="repair-storage" disabled><i data-lucide="wrench" aria-hidden="true"></i>修复存储</button></div>
+           <div class="storage-health-summary" id="storage-health-summary" role="status" hidden></div>
+           <button class="text-button storage-data-manager-button" type="button" id="storage-data-manager"><i data-lucide="table-2" aria-hidden="true"></i>管理本地数据</button>
+           <small class="storage-helper">正文、本地聊天图片和已缓存作品媒体保存在 IndexedDB；作品记录与远程地址仍保留在轻量状态中。</small>
+         </div>
+         <div class="settings-section is-hidden" data-settings-panel="connection">
+         <h3 class="settings-subtitle">连接 Agnes API</h3>
          <p class="modal-copy">选择 API 站点并配置一个共享密钥。密钥仅保存在当前浏览器的 localStorage 中。</p>
          <label class="field-label"><span>API 站点</span><span class="mono">Base URL</span></label>
          <div class="connection-endpoints" id="connection-endpoints" role="tablist" aria-label="API 站点">
@@ -512,8 +561,10 @@
           <input id="api-key-input" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
           <button class="icon-button small" type="button" id="toggle-key-visibility" aria-label="显示 API 密钥" data-tooltip="显示 / 隐藏"><i data-lucide="eye" aria-hidden="true"></i></button>
         </div>
-        <div class="modal-warning"><i data-lucide="triangle-alert" aria-hidden="true"></i><span>不要在共享设备或公开页面中保存真实密钥。</span></div>
+         <div class="modal-warning"><i data-lucide="triangle-alert" aria-hidden="true"></i><span>不要在共享设备或公开页面中保存真实密钥。</span></div>
          <div class="modal-actions"><button class="text-button" type="button" id="clear-api-key"><i data-lucide="trash-2" aria-hidden="true"></i>清除本地密钥</button><button class="primary-action" type="button" id="save-api-key">保存连接 <i data-lucide="check" aria-hidden="true"></i></button></div>
+         <div class="settings-connection-test"><span id="settings-connection-status">当前状态：待验证</span><button class="text-button" type="button" id="test-api-connection"><i data-lucide="radio-tower" aria-hidden="true"></i>测试连接</button></div>
+         </div>
       </section>
     </div>
 
