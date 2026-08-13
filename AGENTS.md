@@ -1,30 +1,144 @@
 # AGENTS.md
 
-基于原生 JavaScript 的单页应用，用于 Agnes AI API 创作工作台（文本对话 / 图像生成 / 视频生成）。无框架、无打包器、根目录无 `package.json`。
+基于原生 JavaScript 的 Agnes AI 单页创作工作台，提供文本对话、图像生成、视频生成和作品管理。项目无前端框架、无打包器，根目录没有 `package.json`。
 
-## 目录结构
-- `index.html` — 所有 HTML 结构以及 4 种模式（chat / image / video / works）+ 设置面板。
-- `app.js` — 所有逻辑。启动入口是 `document.addEventListener('DOMContentLoaded', init)`（app.js:2297）。使用单个模块级 `state` 对象。
-- `styles.css` — 所有样式。
-- `tests/agnes_workbench_smoke.py` — Playwright（Python）端到端冒烟测试。
+## 项目结构
 
-## 运行 / 本地服务
-- 无需构建。任选一个静态服务器托管仓库根目录即可。冒烟测试硬编码了 `http://127.0.0.1:4173/index.html`，测试时请用该端口提供服务：
-  `python -m http.server 4173`
+- `index.html`：四种主模式（chat / image / video / works）、顶栏、Inspector、设置中心以及静态弹窗结构。
+- `app.js`：全部应用逻辑。使用单个模块级 `state`，入口为 `document.addEventListener('DOMContentLoaded', init)`。
+- `styles.css`：全部主题、响应式布局、动效和组件样式。
+- `config/prompt-examples.json`：文生图案例配置，只用于文生图模式。
+- `assets/prompt-examples/img/`：文生图案例图片目录。
+- `tests/agnes_workbench_smoke.py`：Playwright（Python）端到端冒烟测试；该目录被 `.gitignore` 忽略，文件可能只存在于本地。
 
-## Python 环境（uv）
-- 本机 Python 是通过 **uv** 安装/托管的，不是系统直接安装：优先检测并使用 `uv run python` / `uv python` 找到的解释器，其次才是 PATH 里直接安装的 `python`。用到 Python 的场合（如上面的静态服务器、下面的冒烟测试）都按此顺序解析。
-- 若要为项目创建虚拟环境并安装依赖：`uv sync` 或 `uv pip install playwright && uv run playwright install chromium`。
+## 运行方式
 
-## 冒烟测试
-- 运行测试：`uv run python tests/agnes_workbench_smoke.py`（需要 `playwright` Python 包 + `playwright install chromium`）。测试通过 `page.route` 模拟 Agnes API、在 localStorage 写入假 API 密钥，断言对话 / 图像理解 / 图像 / 视频 / 作品流程以及无控制台错误。截图输出到 `%TEMP%`。
+无需构建，必须通过静态 HTTP 服务访问，不能直接双击 `index.html`，否则 JSON 配置和部分浏览器存储能力可能无法正常工作。
 
-## 约定 / 注意事项
-- **版本号装饰：** 修改 `index.html`、`app.js` 或 `styles.css` 时，务必同时更新 CSS/JS 的 `<link>/<script>` 标签上的 `v=...`，以及 `<title>` 中的 `vX.Y.Z`（index.html:8,12,14），否则浏览器会使用过期缓存。即使忘记更新，测试仍然会通过。
-- **界面文案仅限 zh-CN。** 新增的界面文本（包括现有 `label` 字段和 `showToast` 消息）都应当是中文。`app.js` 中的注释也是中文。
-- **图标：** lucide 图标来自 CDN；任何动态注入、包含 `data-lucide="..."` 的 HTML 在其进入 DOM 后都需要调用 `refreshIcons()`（约 app.js:254）。现有的修饰器在静态 HTML 和 `init()` 中初始化图标属性。
-- **API 接线**（app.js:3-20）：对话使用 POST `/v1/chat/completions`，采用 OpenAI 风格的分块 SSE（content + `reasoning_content`）；图像使用 POST `/v1/images/generations`，参考图放在 `extra_body.image` 下，优先使用 `response_format: 'url'`；视频使用 POST `/v1/videos`（按时长预设写入 `num_frames`），然后轮询 GET `/agnesapi?video_id=...`。基础 URL 为 `https://apihub.agnes-ai.com`。认证方式为 `Authorization: Bearer <key>`，密钥来自 localStorage。
-- **localStorage 键：** API 密钥 `agnes-workbench.api-key`；完整应用状态 `agnes-workbench.v1`。作品历史只保存媒体 URL + 提示词/元数据，绝不保存密钥。
-- 根目录 `.gitignore` 忽略 `.opencode/`（opencode 自身配置：插件依赖 + superdesign UI 技能）、`.venv/`、`tests/`——不要整体照搬 `.opencode/skill` 中的 CSS 建议；本应用在 `styles.css` 中有自己的设计体系。
+优先使用 uv 管理的 Python：
 
-暂时不要冒烟测试了，告诉我让我进行自测
+```powershell
+uv run --no-cache python -m http.server 4173 --bind 127.0.0.1
+```
+
+若本机 uv 缓存可正常写入，也可省略 `--no-cache`。uv 不可用时再使用 PATH 中真实可用的 `python`。访问：
+
+```text
+http://127.0.0.1:4173/index.html
+```
+
+测试脚本固定使用端口 `4173`，启动前先检查端口是否已占用。
+
+## 架构与状态
+
+- `state` 保存运行时状态；不要在页面逻辑之外再建立第二套全局状态源。
+- localStorage 键 `agnes-workbench.v1` 只保存轻量状态：界面设置、连接端点、会话索引和作品记录等，不再保存完整对话正文或媒体二进制。
+- API Key 单独保存在 `agnes-workbench.api-key`，不能写入 `state`、IndexedDB、作品记录、备份或日志。
+- IndexedDB 数据库名为 `agnes-workbench.storage`，当前版本为 `2`。
+- IndexedDB 对象仓库：
+  - `sessions`：会话元数据。
+  - `messages`：完整消息、正文和思考内容，按 `sessionId` 建索引。
+  - `blobs`：本地聊天图片和 SVG 附件。
+  - `workMedia`：作品媒体缓存；新图片可自动缓存，视频仅手动缓存。
+  - `meta`：迁移和数据库版本元数据，只读展示。
+- 数据库读写必须集中在 `StorageRepository`，页面事件不要直接调用 `indexedDB`。
+- 旧版完整 localStorage 会话在 IndexedDB 写入成功后才缩减为轻量状态；迁移逻辑必须可重复执行且不能破坏已有数据。
+- 默认保留最近 20 个会话、40 条作品；设置中心允许会话 `5–100`、作品 `10–100`。
+
+## API 接线
+
+- 国际站：`https://apihub.agnes-ai.com`（默认）。
+- 国内站：`https://apihub.agnes-ai.cn`。
+- 自定义 Base URL：公网仅允许 HTTPS；本地开发允许 `localhost`、`127.0.0.1` 和 `[::1]` 的 HTTP。
+- 认证：`Authorization: Bearer <key>`。
+- 对话：POST `/v1/chat/completions`，处理 OpenAI 风格 SSE 的 `content` 和 `reasoning_content`。
+- 图像：POST `/v1/images/generations`，参考图写入 `extra_body.image`，优先请求 `response_format: "url"`。
+- 视频：POST `/v1/videos`，按时长预设写入 `num_frames`；随后 GET `/agnesapi?video_id=...` 轮询。
+- 所有 Agnes 请求经 `fetchAgnes()` 动态解析当前端点；不要在业务函数中重新硬编码 Base URL。
+
+## 媒体与缓存
+
+- 作品记录保存远程 URL、提示词、元数据和轻量生成参数，不保存 API Key。
+- 新生成图片和可访问的旧图片可缓存到 `workMedia`；视频默认只保留 URL，由用户主动缓存。
+- 显示优先级为“本地 Blob URL → 远程 URL → 明确的媒体不可用状态”。关闭或替换 Object URL 时必须调用 `URL.revokeObjectURL()`。
+- 浏览器直接下载第三方媒体会受 CORS、403、URL 过期和网络策略影响。缓存失败不能删除作品记录，必须保留远程 URL 并显示可读原因。
+- 清除缓存只删除 IndexedDB 媒体，不得删除作品记录、提示词或远程 URL。
+- SVG 只能作为图片资源通过 `<img>` / Data URI / Blob 显示，不能把未经处理的 SVG 文本直接插入 DOM。
+
+## 文生图案例
+
+- 案例只在文生图模式显示；图生图和多图合成继续使用 `IMAGE_PROMPT_GUIDES`。
+- 配置文件必须是 UTF-8 JSON，公共结构为：
+
+```json
+{
+  "version": 1,
+  "textToImage": {
+    "title": "区域标题",
+    "description": "区域说明",
+    "examples": [
+      {
+        "id": "唯一且稳定的 ID",
+        "title": "案例标题",
+        "image": "assets/prompt-examples/img/example.jpg",
+        "alt": "案例图片替代文字",
+        "prompt": "完整提示词，可保留 ${变量占位符}"
+      }
+    ]
+  }
+}
+```
+
+- 图片可使用相对路径或 HTTPS URL；本地图片放入 `assets/prompt-examples/img/`。
+- `id` 必须唯一且稳定，不能依赖数组下标。
+- 点击案例只填入提示词、更新选中态并滚动案例轨道；不得自动折叠案例区。折叠状态只由用户点击折叠按钮控制。
+- 修改案例加载逻辑时同步更新 `app.js` 中 JSON 请求的缓存版本参数。
+
+## 界面约定
+
+- 新增界面文案和 `app.js` 注释仅使用 zh-CN。
+- 使用现有 CSS 变量和主题语义，不新增只适配深色模式的硬编码表面。
+- 新交互必须同时考虑鼠标、触摸和键盘；图标按钮实际命中区域应不低于 `44×44px`。
+- Lucide 图标来自 CDN。动态插入含 `data-lucide` 的 DOM 后必须调用 `refreshIcons()`。
+- 媒体优先完整显示，通常使用 `object-fit: contain`；只有案例缩略图等明确需要统一视觉裁切的场景才使用 `cover`。
+- 尊重应用“减少动效”设置和系统 `prefers-reduced-motion`。
+
+## 版本与缓存
+
+修改 `index.html`、`app.js` 或 `styles.css` 时必须同步更新：
+
+- `index.html` 的 `<title>` 版本号。
+- CSS `<link>` 的 `v=...`。
+- JS `<script>` 的 `v=...`。
+- 若案例行为或配置格式发生变化，更新 `app.js` 中 `prompt-examples.json?v=...`。
+
+只修改 Markdown 文档时不需要升级应用版本。
+
+## 验证
+
+常规静态检查：
+
+```powershell
+node --check app.js
+git diff --check
+Get-Content -Raw -Encoding UTF8 config\prompt-examples.json | ConvertFrom-Json | Out-Null
+```
+
+需要运行冒烟测试时：
+
+```powershell
+uv pip install playwright
+uv run playwright install chromium
+uv run python tests/agnes_workbench_smoke.py
+```
+
+测试通过 `page.route` 模拟 Agnes API，并断言对话、图像理解、图像、视频、作品流程以及无控制台错误。
+
+**当前项目要求：暂时不要运行 Playwright 冒烟测试。完成修改后提供浏览器自测地址和明确的人工自测清单，由用户自行验证。**
+
+## Git 与工作区
+
+- 工作区可能包含用户未提交的修改；不要重置、覆盖或清理与当前任务无关的内容。
+- `.gitignore` 忽略 `.opencode/`、`.agents/`、`.venv/` 和 `tests/`。
+- 不要整体照搬外部技能目录中的 CSS；本项目以 `styles.css` 的现有设计体系为准。
+- 除非用户明确要求，不要自动提交或推送 Git。
