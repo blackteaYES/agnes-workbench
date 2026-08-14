@@ -58,6 +58,9 @@
   --danger: oklch(0.74 0.15 25);
   --danger-soft: oklch(0.74 0.15 25 / 0.12);
 
+  --brand-tile: oklch(0.14 0.012 85);
+  --brand-tile-line: oklch(1 0 0 / 0.12);
+
   --radius: 14px;
   --radius-sm: 9px;
   --radius-pill: 999px;
@@ -363,19 +366,16 @@ svg[data-lucide] {
 }
 
 .brand-mark {
-  display: grid;
-  width: 38px;
-  height: 38px;
+  display: block;
+  width: 42px;
+  height: 42px;
   flex: 0 0 auto;
-  place-items: center;
-  border-radius: 10px;
-  background: linear-gradient(135deg, oklch(0.84 0.14 70), oklch(0.7 0.12 52));
-  color: oklch(0.13 0.02 60);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  box-shadow: 0 6px 18px oklch(0.8 0.13 68 / 0.28);
+  padding: 2px;
+  border: 1px solid var(--brand-tile-line);
+  border-radius: 11px;
+  background: var(--brand-tile);
+  object-fit: contain;
+  box-shadow: 0 5px 16px oklch(0 0 0 / 0.24);
 }
 
 .brand-copy {
@@ -385,16 +385,20 @@ svg[data-lucide] {
 }
 
 .brand-name {
+  overflow: hidden;
   color: var(--text);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .brand-subtitle {
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 8.5px;
   letter-spacing: 0.04em;
 }
 
@@ -612,6 +616,19 @@ svg[data-lucide] {
 
 .topbar-context {
   overflow: hidden;
+}
+
+.topbar-brand-mark {
+  display: none;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  padding: 1px;
+  border: 1px solid var(--brand-tile-line);
+  border-radius: 9px;
+  background: var(--brand-tile);
+  object-fit: contain;
+  box-shadow: 0 4px 14px oklch(0 0 0 / 0.2);
 }
 
 .eyebrow,

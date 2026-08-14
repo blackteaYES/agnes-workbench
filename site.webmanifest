@@ -1,0 +1,25 @@
+{
+  "name": "Agnes-工作台",
+  "short_name": "Agnes",
+  "description": "集 AI 对话、图像、视频创作和作品管理于一体的创作工作台",
+  "lang": "zh-CN",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#111414",
+  "theme_color": "#111414",
+  "icons": [
+    {
+      "src": "assets/brand/agnes-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "assets/brand/agnes-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,4 +1,8 @@
 @media (max-width: 1160px) {
+  .topbar-brand-mark {
+    display: block;
+  }
+
   html {
     scroll-behavior: auto;
   }
@@ -472,6 +476,12 @@
 }
 
 @media (max-width: 380px) {
+  .topbar-brand-mark {
+    width: 30px;
+    height: 30px;
+    flex-basis: 30px;
+  }
+
   .nav-item > span:not(.nav-count) {
     font-size: 8.5px;
   }

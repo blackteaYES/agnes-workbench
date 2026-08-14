@@ -1,5 +1,22 @@
 'use strict';
 
+let browserThemeMediaQuery = null;
+
+function syncBrowserThemeColor(theme) {
+  const meta = document.querySelector('#browser-theme-color');
+  if (!meta) return;
+  if (!browserThemeMediaQuery && window.matchMedia) {
+    browserThemeMediaQuery = window.matchMedia('(prefers-color-scheme: light)');
+    const handleSystemThemeChange = () => {
+      if (state.ui.general?.theme === 'system') syncBrowserThemeColor('system');
+    };
+    if (browserThemeMediaQuery.addEventListener) browserThemeMediaQuery.addEventListener('change', handleSystemThemeChange);
+    else browserThemeMediaQuery.addListener?.(handleSystemThemeChange);
+  }
+  const useLight = theme === 'light' || (theme === 'system' && browserThemeMediaQuery?.matches);
+  meta.content = useLight ? '#f5f2ec' : '#111414';
+}
+
 function updateKeyStatus(connected = false, authError = false) {
   if (connected) {
     connectionStatus = 'connected';
@@ -79,6 +96,7 @@ function applyGeneralSettings() {
   const theme = ['dark', 'light', 'system'].includes(general.theme) ? general.theme : 'dark';
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme === 'system' ? 'light dark' : theme;
+  syncBrowserThemeColor(theme);
   document.documentElement.dataset.density = general.density === 'compact' ? 'compact' : 'comfortable';
   document.documentElement.classList.toggle('reduce-motion', Boolean(general.reducedMotion));
 }
