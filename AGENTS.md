@@ -5,15 +5,21 @@
 ## 项目结构
 
 - `index.html`：四种主模式（chat / image / video / works）、顶栏、Inspector、设置中心以及静态弹窗结构。
-- `app.js`：全部应用逻辑。使用单个模块级 `state`，入口为 `document.addEventListener('DOMContentLoaded', init)`。
-- `styles.css`：全部主题、响应式布局、动效和组件样式。
+- `app.js`：薄启动入口和页面事件装配，入口为 `document.addEventListener('DOMContentLoaded', init)`。
+- `assets/js/`：按职责拆分的经典脚本，依次包含核心状态、存储、通用 UI、设置、API、聊天、生成共用逻辑、图像、视频和作品。
+- `assets/css/`：按原始级联顺序拆分的主题、布局、功能区、弹窗、预览和响应式样式。
+- `assets/vendor/`、`assets/fonts/`：本地 Lucide 和字体资源，正式部署和双击运行不依赖第三方脚本或字体 CDN。
 - `config/prompt-examples.json`：文生图案例配置，只用于文生图模式。
+- `config/prompt-examples.generated.js`：从 JSON 生成的双击兼容镜像，不要手动修改。
+- `scripts/sync-prompt-examples.mjs`：校验案例配置并生成或检查 JS 镜像。
 - `assets/prompt-examples/img/`：文生图案例图片目录。
 - `tests/agnes_workbench_smoke.py`：Playwright（Python）端到端冒烟测试；该目录被 `.gitignore` 忽略，文件可能只存在于本地。
 
 ## 运行方式
 
-无需构建，必须通过静态 HTTP 服务访问，不能直接双击 `index.html`，否则 JSON 配置和部分浏览器存储能力可能无法正常工作。
+无需构建，正式运行方式为 Cloudflare Pages、GitHub Pages 或任意静态 HTTP(S) 服务。仓库根目录就是发布目录，入口为 `index.html`。
+
+Chrome / Edge 也可直接双击 `index.html` 使用：此时案例读取 `config/prompt-examples.generated.js`，官方 Agnes 端点可以直连。不同浏览器对 `file://` 下 localStorage、IndexedDB 和自定义端点 CORS 的策略不同，双击模式不作为跨浏览器一致性承诺。
 
 优先使用 uv 管理的 Python：
 
@@ -29,9 +35,14 @@ http://127.0.0.1:4173/index.html
 
 测试脚本固定使用端口 `4173`，启动前先检查端口是否已占用。
 
+Cloudflare Pages 配置：构建命令留空，输出目录使用 `.`。
+
 ## 架构与状态
 
 - `state` 保存运行时状态；不要在页面逻辑之外再建立第二套全局状态源。
+- 所有 `assets/js/*.js` 都是按 `index.html` 顺序加载的经典脚本，不要改成 `type="module"`，否则会破坏 `file://` 兼容。
+- 顶层共享符号使用同一个全局词法环境；不得在多个脚本中重复声明同名顶层 `const` / `let` / `class`。
+- `state`、API Key 和连接草稿在 `app.js` 的 `init()` 第一阶段初始化；不要在拆分脚本加载阶段读取尚未初始化的 `state`。
 - localStorage 键 `agnes-workbench.v1` 只保存轻量状态：界面设置、连接端点、会话索引和作品记录等，不再保存完整对话正文或媒体二进制。
 - API Key 单独保存在 `agnes-workbench.api-key`，不能写入 `state`、IndexedDB、作品记录、备份或日志。
 - IndexedDB 数据库名为 `agnes-workbench.storage`，当前版本为 `2`。
@@ -92,25 +103,27 @@ http://127.0.0.1:4173/index.html
 - 图片可使用相对路径或 HTTPS URL；本地图片放入 `assets/prompt-examples/img/`。
 - `id` 必须唯一且稳定，不能依赖数组下标。
 - 点击案例只填入提示词、更新选中态并滚动案例轨道；不得自动折叠案例区。折叠状态只由用户点击折叠按钮控制。
-- 修改案例加载逻辑时同步更新 `app.js` 中 JSON 请求的缓存版本参数。
+- HTTP(S) 下优先读取原 JSON；`file://` 或 JSON 请求失败时使用生成镜像。
+- 修改 JSON 后运行 `node scripts/sync-prompt-examples.mjs`，并提交同步更新后的生成文件。
+- 修改案例加载行为或配置格式时同步更新 `assets/js/generation.js` 中 JSON 请求的缓存版本参数。
 
 ## 界面约定
 
-- 新增界面文案和 `app.js` 注释仅使用 zh-CN。
+- 新增界面文案和 JavaScript 注释仅使用 zh-CN。
 - 使用现有 CSS 变量和主题语义，不新增只适配深色模式的硬编码表面。
 - 新交互必须同时考虑鼠标、触摸和键盘；图标按钮实际命中区域应不低于 `44×44px`。
-- Lucide 图标来自 CDN。动态插入含 `data-lucide` 的 DOM 后必须调用 `refreshIcons()`。
+- Lucide 固定版本保存在 `assets/vendor/`。动态插入含 `data-lucide` 的 DOM 后必须调用 `refreshIcons()`。
 - 媒体优先完整显示，通常使用 `object-fit: contain`；只有案例缩略图等明确需要统一视觉裁切的场景才使用 `cover`。
 - 尊重应用“减少动效”设置和系统 `prefers-reduced-motion`。
 
 ## 版本与缓存
 
-修改 `index.html`、`app.js` 或 `styles.css` 时必须同步更新：
+修改 `index.html`、`app.js`、`assets/js/` 或 `assets/css/` 时必须同步更新：
 
 - `index.html` 的 `<title>` 版本号。
 - CSS `<link>` 的 `v=...`。
 - JS `<script>` 的 `v=...`。
-- 若案例行为或配置格式发生变化，更新 `app.js` 中 `prompt-examples.json?v=...`。
+- 若案例行为或配置格式发生变化，更新 `assets/js/generation.js` 中 `prompt-examples.json?v=...`。
 
 只修改 Markdown 文档时不需要升级应用版本。
 
@@ -119,7 +132,9 @@ http://127.0.0.1:4173/index.html
 常规静态检查：
 
 ```powershell
+Get-ChildItem assets\js -Filter *.js | ForEach-Object { node --check $_.FullName }
 node --check app.js
+node scripts/sync-prompt-examples.mjs --check
 git diff --check
 Get-Content -Raw -Encoding UTF8 config\prompt-examples.json | ConvertFrom-Json | Out-Null
 ```
@@ -140,5 +155,6 @@ uv run python tests/agnes_workbench_smoke.py
 
 - 工作区可能包含用户未提交的修改；不要重置、覆盖或清理与当前任务无关的内容。
 - `.gitignore` 忽略 `.opencode/`、`.agents/`、`.venv/` 和 `tests/`。
-- 不要整体照搬外部技能目录中的 CSS；本项目以 `styles.css` 的现有设计体系为准。
+- 不要整体照搬外部技能目录中的 CSS；本项目以 `assets/css/` 的现有设计体系和既定加载顺序为准。
+- 拆分后的 CSS 必须保持 `index.html` 中的 `<link>` 顺序；不要把媒体查询集中重排到单独位置，避免改变级联结果。
 - 除非用户明确要求，不要自动提交或推送 Git。

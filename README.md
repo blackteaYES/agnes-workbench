@@ -2,7 +2,7 @@
 
 Agnes AI 原生 JavaScript 创作工作台，无框架、无打包器。一个页面内完成文本对话、图像生成、视频生成、作品管理与本地数据维护。
 
-当前界面版本：`v2.23.1`。
+当前界面版本：`v2.24.0`。
 
 ## 功能概览
 
@@ -22,7 +22,7 @@ Agnes AI 原生 JavaScript 创作工作台，无框架、无打包器。一个�
 
 ## 快速开始
 
-项目无需安装前端依赖，但必须通过 HTTP 静态服务访问，不能直接双击 HTML 文件。
+项目无需安装前端依赖，也没有构建步骤。正式使用建议部署到 Cloudflare Pages 或任意静态 HTTP(S) 服务。
 
 ```powershell
 uv run --no-cache python -m http.server 4173 --bind 127.0.0.1
@@ -34,6 +34,8 @@ uv run --no-cache python -m http.server 4173 --bind 127.0.0.1
 http://127.0.0.1:4173/index.html
 ```
 
+Chrome / Edge 也可以直接双击根目录的 `index.html`。双击模式会读取生成的案例配置镜像；不同浏览器对 `file://` 下 localStorage、IndexedDB 以及自定义 API CORS 的策略不同，因此 HTTP(S) 仍是推荐运行方式。
+
 在右上角打开设置中心的「连接」分区：
 
 1. 选择国际站、国内站或自定义 Base URL。
@@ -41,6 +43,18 @@ http://127.0.0.1:4173/index.html
 3. 测试连接后开始创作。
 
 API Key 只保存在本机 localStorage 的 `agnes-workbench.api-key`，通过 `Authorization: Bearer <key>` 发送，不进入作品、备份或 IndexedDB。
+
+## 静态部署
+
+Cloudflare Pages 可直接发布仓库根目录：
+
+```text
+构建命令：留空
+输出目录：.
+入口文件：index.html
+```
+
+所有运行资源都使用相对路径，Lucide 和字体已随项目本地提供，不依赖第三方脚本或字体 CDN。国际站和国内站 API 支持浏览器跨域请求；自定义 API 仍需自行配置允许页面来源的 CORS。
 
 ## 连接端点
 
@@ -59,6 +73,8 @@ API Key 只保存在本机 localStorage 的 `agnes-workbench.api-key`，通过 `
 ## 文生图案例配置
 
 案例配置位于 [config/prompt-examples.json](config/prompt-examples.json)，只影响文生图模式。支持一个或多个案例。
+
+HTTP(S) 环境直接读取该 JSON；双击 `index.html` 或 JSON 请求失败时，应用回退到 [config/prompt-examples.generated.js](config/prompt-examples.generated.js)。JSON 是唯一人工编辑源，生成文件不要手动修改。
 
 ```json
 {
@@ -88,6 +104,15 @@ API Key 只保存在本机 localStorage 的 `agnes-workbench.api-key`，通过 `
 - `${...}` 会原样写入提示词框，不会被应用自动替换。
 - 点击案例会填入完整提示词、突出当前案例并平滑滚动案例轨道；不会自动折叠。折叠状态完全由用户控制。
 - 图片加载失败时显示占位，但不影响提示词填入。
+
+修改 JSON 后同步生成双击兼容镜像：
+
+```powershell
+node scripts/sync-prompt-examples.mjs
+node scripts/sync-prompt-examples.mjs --check
+```
+
+同步脚本会校验结构、案例 ID、图片 URL 形式和本地图片路径，并检测生成文件是否过期。
 
 图生图和多图合成不读取该 JSON，继续使用应用内置的提示词结构示例。
 
@@ -173,7 +198,9 @@ API Key 只保存在本机 localStorage 的 `agnes-workbench.api-key`，通过 `
 静态检查：
 
 ```powershell
+Get-ChildItem assets\js -Filter *.js | ForEach-Object { node --check $_.FullName }
 node --check app.js
+node scripts/sync-prompt-examples.mjs --check
 git diff --check
 Get-Content -Raw -Encoding UTF8 config\prompt-examples.json | ConvertFrom-Json | Out-Null
 ```
@@ -199,7 +226,9 @@ uv run python tests/agnes_workbench_smoke.py
 
 ## 技术约定
 
-- 所有前端代码集中在 `index.html`、`app.js` 和 `styles.css`。
-- Lucide 图标从 CDN 加载，动态图标插入后由 `refreshIcons()` 初始化。
+- `index.html` 保留完整静态页面结构；`app.js` 只负责启动与事件装配，业务逻辑位于 `assets/js/`。
+- JavaScript 使用按依赖顺序加载的经典脚本，不使用框架、打包器或 ES Modules，以兼容静态部署和 Chrome / Edge 双击运行。
+- CSS 位于 `assets/css/`，按 `index.html` 中的顺序保持原有级联；拆分不改变现有 UI、动效和响应式契约。
+- Lucide 固定版本和字体均本地加载，动态图标插入后由 `refreshIcons()` 初始化。
 - 界面文字和代码注释使用 zh-CN。
 - 修改 HTML、JavaScript 或 CSS 时必须同步更新 `<title>`、CSS 和 JS 的缓存版本；只修改 Markdown 不需要升级应用版本。
