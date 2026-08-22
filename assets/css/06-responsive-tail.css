@@ -1159,17 +1159,13 @@
   .works-heading-actions {
     display: grid;
     width: 100%;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
   }
 
   .works-heading-actions .text-button {
     min-width: 0;
     justify-content: center;
-  }
-
-  .works-heading-actions .danger-button {
-    grid-column: 1 / -1;
   }
 
   .works-import-stats {
