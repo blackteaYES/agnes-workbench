@@ -72,12 +72,14 @@ function legacyCopyText(value) {
 }
 
 async function copyTextToClipboard(value) {
-  // 部分手机内核（如小米）的异步剪贴板接口会被系统拒绝，失败时继续用 execCommand 兜底
+  // 国产手机内核（小米、UC、微信等）的异步剪贴板接口常被系统拒绝，非 HTTPS 环境下甚至不存在；
+  // execCommand 在用户手势内同步执行最可靠，优先使用，失败再回退异步剪贴板 API
+  const legacyOk = await legacyCopyText(value);
+  if (legacyOk) return true;
   if (navigator.clipboard?.writeText) {
-    const copied = await navigator.clipboard.writeText(value).then(() => true, () => false);
-    if (copied) return true;
+    return navigator.clipboard.writeText(value).then(() => true, () => false);
   }
-  return legacyCopyText(value);
+  return false;
 }
 
 function triggerBlobDownload(blob, filename) {
@@ -713,12 +715,8 @@ $('#video-result')?.addEventListener('click', (event) => {
 
 async function copyText(value) {
   if (!value) return;
-  try {
-    await navigator.clipboard.writeText(value);
-    showToast('已复制到剪贴板。');
-  } catch (error) {
-    showToast('复制失败，请手动选择文本。', 'error');
-  }
+  const copied = await copyTextToClipboard(value);
+  showToast(copied ? '已复制到剪贴板。' : '复制失败，请手动选择文本。', copied ? 'info' : 'error');
 }
 
 // Agnes 媒体存储（GCS）支持 response-content-disposition 查询参数：

@@ -1066,7 +1066,7 @@
 
   .api-status-copy #api-status-text,
   .api-status-copy .api-status-separator,
-  .composer-tools > .composer-hint:not(.thinking-hint) {
+  .composer-tools > .composer-hint:not(.thinking-hint):not(.markdown-hint) {
     display: none;
   }
 
