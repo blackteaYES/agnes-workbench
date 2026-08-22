@@ -74,6 +74,17 @@ function copyTextToClipboard(value) {
   });
 }
 
+function triggerBlobDownload(blob, filename) {
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+}
+
 function showWorksBackupModal({ text, filename, count }) {
   const existing = $('#works-backup-modal');
   if (existing) existing.remove();
@@ -105,26 +116,28 @@ function showWorksBackupModal({ text, filename, count }) {
     const copied = await copyTextToClipboard(text);
     showToast(copied ? '备份内容已复制，可粘贴到备忘录或文件应用保存。' : '复制失败，可长按上方内容手动选择复制。', copied ? 'info' : 'error');
   });
-  backdrop.querySelector('#works-backup-save').addEventListener('click', async () => {
-    try {
-      await saveBlob(new File([text], filename, { type: 'application/json;charset=utf-8' }), filename);
-      showToast('已发起保存，请在浏览器下载记录或文件管理中查找。');
-    } catch (error) {
-      if (error.name !== 'AbortError') showToast('保存失败，请使用「复制内容」。', 'error');
-    }
+  backdrop.querySelector('#works-backup-save').addEventListener('click', () => {
+    // 部分手机内核暴露的 showSaveFilePicker 是坏的，这里直接用下载链接绕开
+    triggerBlobDownload(new Blob([text], { type: 'application/json;charset=utf-8' }), filename);
+    showToast('已发起保存，请在浏览器下载记录或文件管理中查找。');
   });
   syncOverlayState();
   backdrop.querySelector('#works-backup-copy').focus();
+}
+
+function isTouchDevice() {
+  // 魔改内核可能暴露桌面端接口（showSaveFilePicker 等）但实现不可用，
+  // 设备形态判断比特性检测更可靠：触屏主输入，或有触摸点且屏幕较窄
+  if (window.matchMedia('(pointer: coarse)').matches) return true;
+  return navigator.maxTouchPoints > 0 && Math.min(window.innerWidth, window.innerHeight) < 640;
 }
 
 async function downloadWorksBackup() {
   const payload = createWorksBackupPayload();
   const filename = worksBackupFilename();
   const text = JSON.stringify(payload, null, 2);
-  // 小米、UC、微信等移动浏览器对文件下载的限制各不相同：
-  // 触屏设备直接展示备份内容对话框，复制内容在任何浏览器都可用
-  const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
-  if (!window.showSaveFilePicker && coarsePointer) {
+  // 手机浏览器对文件下载的限制各不相同，触屏设备直接展示备份内容对话框
+  if (isTouchDevice()) {
     showWorksBackupModal({ text, filename, count: payload.works.length });
     return;
   }
