@@ -74,30 +74,62 @@ function copyTextToClipboard(value) {
   });
 }
 
+function showWorksBackupModal({ text, filename, count }) {
+  const existing = $('#works-backup-modal');
+  if (existing) existing.remove();
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.id = 'works-backup-modal';
+  backdrop.innerHTML = `
+    <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="works-backup-modal-title">
+      <div class="modal-topline">
+        <span class="section-kicker"><span class="signal-line"></span> 作品备份</span>
+        <button class="icon-button small" type="button" id="works-backup-close" aria-label="关闭" data-tooltip="关闭"><i data-lucide="x" aria-hidden="true"></i></button>
+      </div>
+      <h2 id="works-backup-modal-title">备份内容已就绪</h2>
+      <p class="modal-copy">共 ${count} 条作品，备份文件名 ${escapeHtml(filename)}。可以先复制内容，或尝试保存文件。</p>
+      <textarea class="works-backup-content" readonly rows="8" aria-label="备份 JSON 内容"></textarea>
+      <div class="modal-warning"><i data-lucide="triangle-alert" aria-hidden="true"></i><span>部分手机浏览器会拦截文件下载，或保存到不易找到的目录；「复制内容」在所有浏览器都可用，粘贴到备忘录或文件应用即可长期保存。</span></div>
+      <div class="modal-actions">
+        <button class="primary-action" type="button" id="works-backup-copy"><i data-lucide="copy" aria-hidden="true"></i> 复制内容</button>
+        <button class="text-button" type="button" id="works-backup-save"><i data-lucide="download" aria-hidden="true"></i> 尝试保存文件</button>
+      </div>
+    </section>`;
+  document.body.appendChild(backdrop);
+  backdrop.querySelector('.works-backup-content').value = text;
+  refreshIcons();
+  const close = () => { backdrop.remove(); syncOverlayState(); };
+  backdrop.querySelector('#works-backup-close').addEventListener('click', close);
+  backdrop.addEventListener('click', (event) => { if (event.target === backdrop) close(); });
+  backdrop.querySelector('#works-backup-copy').addEventListener('click', async () => {
+    const copied = await copyTextToClipboard(text);
+    showToast(copied ? '备份内容已复制，可粘贴到备忘录或文件应用保存。' : '复制失败，可长按上方内容手动选择复制。', copied ? 'info' : 'error');
+  });
+  backdrop.querySelector('#works-backup-save').addEventListener('click', async () => {
+    try {
+      await saveBlob(new File([text], filename, { type: 'application/json;charset=utf-8' }), filename);
+      showToast('已发起保存，请在浏览器下载记录或文件管理中查找。');
+    } catch (error) {
+      if (error.name !== 'AbortError') showToast('保存失败，请使用「复制内容」。', 'error');
+    }
+  });
+  syncOverlayState();
+  backdrop.querySelector('#works-backup-copy').focus();
+}
+
 async function downloadWorksBackup() {
-  showToast('正在导出作品备份…');
   const payload = createWorksBackupPayload();
   const filename = worksBackupFilename();
   const text = JSON.stringify(payload, null, 2);
-  const file = new File([text], filename, { type: 'application/json;charset=utf-8' });
-  // 小米、UC、微信等移动浏览器会拦截 Blob 下载，部分内核的 navigator.share 也是坏的：
-  // 触屏设备改为「尝试下载 + 剪贴板兜底」，保证备份内容一定能拿到
+  // 小米、UC、微信等移动浏览器对文件下载的限制各不相同：
+  // 触屏设备直接展示备份内容对话框，复制内容在任何浏览器都可用
   const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
   if (!window.showSaveFilePicker && coarsePointer) {
-    try { await saveBlob(file, filename); } catch (error) { /* 下载尝试失败时仍有剪贴板兜底 */ }
-    const copied = await copyTextToClipboard(text);
-    showToast(`作品备份已导出，共 ${payload.works.length} 条。`);
-    showNoticeModal({
-      title: '备份已发送到下载与剪贴板',
-      message: copied
-        ? '已尝试下载备份文件，并把完整备份内容复制到剪贴板。'
-        : '已尝试下载备份文件，但复制到剪贴板失败。',
-      detail: copied
-        ? '若浏览器拦截了下载，可直接把剪贴板中的备份内容粘贴到备忘录或文件应用保存。'
-        : '若下载也未开始，请在电脑端导出，或换用系统浏览器重试。'
-    });
+    showWorksBackupModal({ text, filename, count: payload.works.length });
     return;
   }
+  showToast('正在导出作品备份…');
+  const file = new File([text], filename, { type: 'application/json;charset=utf-8' });
   try {
     await saveBlob(file, filename);
     showToast(`作品备份已导出，共 ${payload.works.length} 条。`);
