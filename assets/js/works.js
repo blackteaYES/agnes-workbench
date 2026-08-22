@@ -623,10 +623,52 @@ async function copyText(value) {
   }
 }
 
+// Agnes 媒体存储（GCS）支持 response-content-disposition 查询参数：
+// 拼上该参数后浏览器直接下载文件，不经过 CORS；仅对已验证支持的域名启用
+function supportsAttachmentDownload(url) {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === 'platform-outputs.agnes-ai.space' || hostname.endsWith('.agnes-ai.space');
+  } catch (error) {
+    return false;
+  }
+}
+
+function attachmentDownloadUrl(url, filename) {
+  const directive = `attachment; filename="${filename}"`;
+  return `${url}${url.includes('?') ? '&' : '?'}response-content-disposition=${encodeURIComponent(directive)}`;
+}
+
+function downloadFilenameExtension(url, kind = 'image') {
+  const fromUrl = /\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(url);
+  if (fromUrl) return fromUrl[1].toLowerCase();
+  return kind === 'video' ? 'mp4' : 'png';
+}
+
+function ensureDownloadFilename(filename, url, kind = 'image') {
+  if (/\.[a-z0-9]{2,5}$/i.test(filename)) return filename;
+  return `${filename}.${downloadFilenameExtension(url, kind)}`;
+}
+
+function triggerAttachmentDownload(url, filename) {
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
 async function downloadAsset(url, filename, kind = 'image') {
   const mediaLabel = kind === 'video' ? '视频' : '图片';
   const safeUrl = safeMediaUrl(url);
   if (!safeUrl) { showToast('媒体地址不可用。', 'error'); return; }
+  const finalName = ensureDownloadFilename(filename, safeUrl, kind);
+  if (/^https?:/i.test(safeUrl) && supportsAttachmentDownload(safeUrl)) {
+    triggerAttachmentDownload(attachmentDownloadUrl(safeUrl, finalName), finalName);
+    showToast('下载已开始。');
+    return;
+  }
   let blob = null;
   try {
     const response = await fetch(safeUrl);
@@ -637,7 +679,7 @@ async function downloadAsset(url, filename, kind = 'image') {
   }
   if (blob && blob.size) {
     try {
-      await saveBlob(blob, filename);
+      await saveBlob(blob, finalName);
       showToast('下载已开始。');
     } catch (error) {
       if (error.name !== 'AbortError') showToast('下载失败。', 'error');
