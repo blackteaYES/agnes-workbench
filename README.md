@@ -6,7 +6,7 @@
 
 **一个浏览器里的多模态 AI 创作工作台 · 无框架 · 无打包器 · 开箱即用**
 
-[![version](https://img.shields.io/badge/version-2.26.3-blue)](https://github.com/blackteaYES/agnes-workbench)
+[![version](https://img.shields.io/badge/version-2.26.4-blue)](https://github.com/blackteaYES/agnes-workbench)
 ![pure JavaScript](https://img.shields.io/badge/pure%20JavaScript-no%20framework%20%7C%20no%20build-brightgreen)
 ![deploy](https://img.shields.io/badge/deploy-any%20static%20host-orange)
 ![data](https://img.shields.io/badge/data-stays%20local-green)
@@ -75,10 +75,10 @@ Agnes-工作台把**文本对话、图像生成、视频生成和作品管理**�
 **本地运行**：项目没有前端依赖，也没有构建步骤，用任意静态服务托管仓库根目录即可：
 
 ```powershell
-uv run --no-cache python -m http.server 4173 --bind 127.0.0.1
+uv run --no-cache python -m http.server 4173 --bind 0.0.0.0
 ```
 
-然后打开 <http://127.0.0.1:4173/index.html>。
+然后打开 <http://127.0.0.1:4173/index.html>。绑定 `0.0.0.0` 后，同一局域网内的手机可以用本机 IP 直接访问调试（如 `http://192.168.x.x:4173/index.html`，本机 IP 用 `ipconfig` 查询；首次访问失败时需在 Windows 防火墙放行 Python 的专用网络入站），无需先发布线上版本。
 
 Chrome / Edge 也可以直接双击根目录的 `index.html`：此时案例配置自动切换为本地镜像，官方 Agnes 端点可以直连。不同浏览器对 `file://` 下 localStorage、IndexedDB 和自定义端点 CORS 的策略不同，HTTP(S) 仍是推荐运行方式。
 

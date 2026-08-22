@@ -6,7 +6,7 @@
 
 **A multimodal AI creation workbench in your browser · no framework · no bundler · works out of the box**
 
-[![version](https://img.shields.io/badge/version-2.26.3-blue)](https://github.com/blackteaYES/agnes-workbench)
+[![version](https://img.shields.io/badge/version-2.26.4-blue)](https://github.com/blackteaYES/agnes-workbench)
 ![pure JavaScript](https://img.shields.io/badge/pure%20JavaScript-no%20framework%20%7C%20no%20build-brightgreen)
 ![deploy](https://img.shields.io/badge/deploy-any%20static%20host-orange)
 ![data](https://img.shields.io/badge/data-stays%20local-green)
@@ -77,10 +77,10 @@ Three steps to start creating:
 **Run locally**: the project has no frontend dependencies and no build step — serve the repository root with any static file server:
 
 ```powershell
-uv run --no-cache python -m http.server 4173 --bind 127.0.0.1
+uv run --no-cache python -m http.server 4173 --bind 0.0.0.0
 ```
 
-Then open <http://127.0.0.1:4173/index.html>.
+Then open <http://127.0.0.1:4173/index.html>. With the `0.0.0.0` binding, phones on the same LAN can test directly against your machine (e.g. `http://192.168.x.x:4173/index.html`, find your IP via `ipconfig`; allow Python on private networks in Windows Firewall if the first attempt fails) — no deployment needed.
 
 Chrome / Edge can also open `index.html` directly by double-clicking it: the example config automatically falls back to a local mirror and the official Agnes endpoints remain reachable. Browser policies for localStorage, IndexedDB and custom-endpoint CORS under `file://` vary, so HTTP(S) is still the recommended way to run.
 

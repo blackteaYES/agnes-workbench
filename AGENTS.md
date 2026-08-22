@@ -24,7 +24,7 @@ Chrome / Edge 也可直接双击 `index.html` 使用：此时案例读取 `confi
 优先使用 uv 管理的 Python：
 
 ```powershell
-uv run --no-cache python -m http.server 4173 --bind 127.0.0.1
+uv run --no-cache python -m http.server 4173 --bind 0.0.0.0
 ```
 
 若本机 uv 缓存可正常写入，也可省略 `--no-cache`。uv 不可用时再使用 PATH 中真实可用的 `python`。访问：
@@ -32,6 +32,8 @@ uv run --no-cache python -m http.server 4173 --bind 127.0.0.1
 ```text
 http://127.0.0.1:4173/index.html
 ```
+
+`--bind 0.0.0.0` 让同一局域网内的手机可以直连调试，地址为本机局域网 IP（如 `http://192.168.x.x:4173/index.html`，用 `ipconfig` 查询）。手机首次访问被拒时，需在 Windows 防火墙放行 Python 的专用网络入站。局域网 HTTP 不是安全上下文，浏览器不提供异步剪贴板等 API，应用内已有 `execCommand` 兜底；无需为手机调试发布线上版本。
 
 测试脚本固定使用端口 `4173`，启动前先检查端口是否已占用。
 
