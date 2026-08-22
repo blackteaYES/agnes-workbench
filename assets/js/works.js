@@ -57,9 +57,21 @@ function worksBackupFilename(date = new Date()) {
 
 async function downloadWorksBackup() {
   const payload = createWorksBackupPayload();
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+  const filename = worksBackupFilename();
+  const file = new File([JSON.stringify(payload, null, 2)], filename, { type: 'application/json;charset=utf-8' });
+  // 移动端浏览器常拦截程序化 Blob 下载，触屏设备优先用系统分享面板保存备份文件
+  const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+  if (!window.showSaveFilePicker && coarsePointer && typeof navigator.share === 'function' && navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: filename });
+      showToast(`作品备份已导出，共 ${payload.works.length} 条。`);
+      return;
+    } catch (error) {
+      if (error.name === 'AbortError') return;
+    }
+  }
   try {
-    await saveBlob(blob, worksBackupFilename());
+    await saveBlob(file, filename);
     showToast(`作品备份已导出，共 ${payload.works.length} 条。`);
   } catch (error) {
     if (error.name !== 'AbortError') showToast('作品备份导出失败。', 'error');
@@ -723,5 +735,5 @@ async function saveBlob(blob, filename) {
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
 }
