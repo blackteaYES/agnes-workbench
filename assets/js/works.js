@@ -55,10 +55,7 @@ function worksBackupFilename(date = new Date()) {
   return `agnes-works-${date.getFullYear()}${part(date.getMonth() + 1)}${part(date.getDate())}-${part(date.getHours())}${part(date.getMinutes())}${part(date.getSeconds())}.agnes-workbench.json`;
 }
 
-function copyTextToClipboard(value) {
-  if (navigator.clipboard?.writeText) {
-    return navigator.clipboard.writeText(value).then(() => true, () => false);
-  }
+function legacyCopyText(value) {
   return new Promise((resolve) => {
     const textarea = document.createElement('textarea');
     textarea.value = value;
@@ -72,6 +69,15 @@ function copyTextToClipboard(value) {
     textarea.remove();
     resolve(copied);
   });
+}
+
+async function copyTextToClipboard(value) {
+  // 部分手机内核（如小米）的异步剪贴板接口会被系统拒绝，失败时继续用 execCommand 兜底
+  if (navigator.clipboard?.writeText) {
+    const copied = await navigator.clipboard.writeText(value).then(() => true, () => false);
+    if (copied) return true;
+  }
+  return legacyCopyText(value);
 }
 
 function triggerBlobDownload(blob, filename) {
@@ -114,7 +120,14 @@ function showWorksBackupModal({ text, filename, count }) {
   backdrop.addEventListener('click', (event) => { if (event.target === backdrop) close(); });
   backdrop.querySelector('#works-backup-copy').addEventListener('click', async () => {
     const copied = await copyTextToClipboard(text);
-    showToast(copied ? '备份内容已复制，可粘贴到备忘录或文件应用保存。' : '复制失败，可长按上方内容手动选择复制。', copied ? 'info' : 'error');
+    if (copied) {
+      showToast('备份内容已复制，可粘贴到备忘录或文件应用保存。');
+      return;
+    }
+    const content = backdrop.querySelector('.works-backup-content');
+    content.focus();
+    content.select();
+    showToast('复制失败，已选中全部内容，可长按选择「复制」。', 'error');
   });
   backdrop.querySelector('#works-backup-save').addEventListener('click', () => {
     // 部分手机内核暴露的 showSaveFilePicker 是坏的，这里直接用下载链接绕开
