@@ -6,7 +6,7 @@
 
 **一个浏览器里的多模态 AI 创作工作台 · 无框架 · 无打包器 · 开箱即用**
 
-[![version](https://img.shields.io/badge/version-2.25.2-blue)](https://github.com/blackteaYES/agnes-workbench)
+[![version](https://img.shields.io/badge/version-2.25.3-blue)](https://github.com/blackteaYES/agnes-workbench)
 ![pure JavaScript](https://img.shields.io/badge/pure%20JavaScript-no%20framework%20%7C%20no%20build-brightgreen)
 ![deploy](https://img.shields.io/badge/deploy-any%20static%20host-orange)
 ![data](https://img.shields.io/badge/data-stays%20local-green)

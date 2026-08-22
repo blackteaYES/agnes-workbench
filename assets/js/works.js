@@ -55,20 +55,48 @@ function worksBackupFilename(date = new Date()) {
   return `agnes-works-${date.getFullYear()}${part(date.getMonth() + 1)}${part(date.getDate())}-${part(date.getHours())}${part(date.getMinutes())}${part(date.getSeconds())}.agnes-workbench.json`;
 }
 
+function copyTextToClipboard(value) {
+  if (navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(value).then(() => true, () => false);
+  }
+  return new Promise((resolve) => {
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    let copied = false;
+    try { copied = document.execCommand('copy'); } catch (error) { copied = false; }
+    textarea.remove();
+    resolve(copied);
+  });
+}
+
 async function downloadWorksBackup() {
+  showToast('正在导出作品备份…');
   const payload = createWorksBackupPayload();
   const filename = worksBackupFilename();
-  const file = new File([JSON.stringify(payload, null, 2)], filename, { type: 'application/json;charset=utf-8' });
-  // 移动端浏览器常拦截程序化 Blob 下载，触屏设备优先用系统分享面板保存备份文件
+  const text = JSON.stringify(payload, null, 2);
+  const file = new File([text], filename, { type: 'application/json;charset=utf-8' });
+  // 小米、UC、微信等移动浏览器会拦截 Blob 下载，部分内核的 navigator.share 也是坏的：
+  // 触屏设备改为「尝试下载 + 剪贴板兜底」，保证备份内容一定能拿到
   const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
-  if (!window.showSaveFilePicker && coarsePointer && typeof navigator.share === 'function' && navigator.canShare?.({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file], title: filename });
-      showToast(`作品备份已导出，共 ${payload.works.length} 条。`);
-      return;
-    } catch (error) {
-      if (error.name === 'AbortError') return;
-    }
+  if (!window.showSaveFilePicker && coarsePointer) {
+    try { await saveBlob(file, filename); } catch (error) { /* 下载尝试失败时仍有剪贴板兜底 */ }
+    const copied = await copyTextToClipboard(text);
+    showToast(`作品备份已导出，共 ${payload.works.length} 条。`);
+    showNoticeModal({
+      title: '备份已发送到下载与剪贴板',
+      message: copied
+        ? '已尝试下载备份文件，并把完整备份内容复制到剪贴板。'
+        : '已尝试下载备份文件，但复制到剪贴板失败。',
+      detail: copied
+        ? '若浏览器拦截了下载，可直接把剪贴板中的备份内容粘贴到备忘录或文件应用保存。'
+        : '若下载也未开始，请在电脑端导出，或换用系统浏览器重试。'
+    });
+    return;
   }
   try {
     await saveBlob(file, filename);

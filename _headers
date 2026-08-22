@@ -1,0 +1,6 @@
+# HTML 入口不做长缓存，确保部署后手机浏览器能及时拿到新版本资源引用
+/
+  Cache-Control: public, max-age=0, must-revalidate
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
