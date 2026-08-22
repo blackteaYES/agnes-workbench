@@ -207,7 +207,7 @@ function defaultState() {
     works: [],
     connection: { endpoint: 'international', customBaseUrl: '', lastVerifiedAt: 0 },
     ui: {
-      chat: { temperature: 0.7, maxTokens: 2048, thinking: false, autoFullscreen: true },
+      chat: { temperature: 0.7, maxTokens: 2048, thinking: false, autoFullscreen: true, renderMarkdown: true },
       image: { mode: 'text', size: '2K', ratio: '1:1', stylePreset: 'none', keywordDirection: '' },
       video: { mode: 'text', duration: '5', ratio: '16:9', frameRate: '24', negativePrompt: '', seed: '', stylePreset: 'none', keywordDirection: '' },
       general: { theme: 'system', density: 'comfortable', reducedMotion: false, autoSaveProfile: 'standard' },

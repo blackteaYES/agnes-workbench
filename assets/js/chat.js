@@ -33,10 +33,25 @@ function updateChatStatusHints() {
   hint.setAttribute('aria-checked', String(enabled));
   $('#chat-thinking').checked = enabled;
   $('#chat-thinking-hint-text').textContent = `思考模式：${enabled ? '开' : '关'}`;
+  const markdownHint = $('#chat-markdown-hint');
+  if (markdownHint) {
+    const markdownOn = state.ui.chat.renderMarkdown !== false;
+    markdownHint.classList.toggle('is-on', markdownOn);
+    markdownHint.setAttribute('aria-checked', String(markdownOn));
+    $('#chat-markdown-hint-text').textContent = `Markdown：${markdownOn ? '开' : '关'}`;
+    const markdownToggle = $('#chat-render-markdown');
+    if (markdownToggle) markdownToggle.checked = markdownOn;
+  }
 }
 
 function toggleChatThinkingFromHint() {
   state.ui.chat.thinking = !state.ui.chat.thinking;
+  saveState();
+  renderChat();
+}
+
+function toggleChatMarkdownFromHint() {
+  state.ui.chat.renderMarkdown = !(state.ui.chat.renderMarkdown !== false);
   saveState();
   renderChat();
 }
@@ -206,6 +221,19 @@ function prepareChatMessageImages(container) {
     image.addEventListener('error', showError, { once: true });
     if (image.complete && !image.naturalWidth) showError();
   });
+  $$('.md-image-media', container).forEach((image) => {
+    const showError = () => {
+      const holder = image.closest('.md-image');
+      if (!holder) return;
+      holder.classList.add('is-error');
+      image.hidden = true;
+      const error = $('.md-image-error', holder);
+      if (error) error.hidden = false;
+      refreshIcons();
+    };
+    image.addEventListener('error', showError, { once: true });
+    if (image.complete && !image.naturalWidth) showError();
+  });
 }
 
 function buildChatContent(text, imageUrl = '') {
@@ -252,7 +280,12 @@ function renderChat() {
     const thinking = !user && message.reasoning
       ? `<details class="thinking-block" open><summary><i data-lucide="brain" aria-hidden="true"></i><span>思考过程</span><span class="thinking-state">${isStreaming ? '思考中' : '可收起'}</span></summary><div class="thinking-content">${escapeHtml(message.reasoning)}</div></details>`
       : '';
-    const answer = user ? `<div class="message-content">${image}${escapeHtml(text)}</div>` : `${thinking}<div class="message-content${isStreaming ? ' is-streaming' : ''}" data-answer-content>${escapeHtml(text || (!isStreaming ? 'Agnes 没有返回文本内容。' : ''))}</div>`;
+    const assistantText = text || (!isStreaming ? 'Agnes 没有返回文本内容。' : '');
+    const assistantHtml = state.ui.chat.renderMarkdown ? renderMarkdownText(assistantText) : escapeHtml(assistantText);
+    const userHtml = state.ui.chat.renderMarkdown ? renderMarkdownText(text) : escapeHtml(text);
+    const answer = user
+      ? `<div class="message-content${state.ui.chat.renderMarkdown ? ' md-rendered' : ''}">${image}${userHtml}</div>`
+      : `${thinking}<div class="message-content${isStreaming ? ' is-streaming' : ''}${state.ui.chat.renderMarkdown ? ' md-rendered' : ''}" data-answer-content>${assistantHtml}</div>`;
     return `<article class="message-row ${user ? 'user' : 'assistant'}${isEditing ? ' is-editing' : ''}" data-message-id="${message.id}" tabindex="0"><div class="message-avatar">${user ? '我' : 'AG'}</div><div class="message-body"><div class="message-meta"><span>${user ? '我' : 'AGNES'}</span><span>${formatDate(message.createdAt)}</span>${isStreaming ? '<span class="status-light is-live"></span>' : ''}</div>${editor || answer}${actions}</div></article>`;
   }).join('');
   prepareChatMessageImages(container);
@@ -282,7 +315,22 @@ function updateStreamingMessageView(message) {
     $('.thinking-state', thinkingBlock).textContent = message.streaming ? '思考中' : '可收起';
   }
 
-  answer.textContent = message.content || (!message.streaming ? 'Agnes 没有返回文本内容。' : '');
+  const messageText = message.content || (!message.streaming ? 'Agnes 没有返回文本内容。' : '');
+  if (state.ui.chat.renderMarkdown) {
+    answer.classList.add('md-rendered');
+    // 打字机约 26ms 一拍，Markdown 重排节流到约 240ms，流式结束后补一次完整渲染
+    const now = Date.now();
+    const lastRender = Number(answer.dataset.mdRenderedAt || 0);
+    if (!message.streaming || now - lastRender >= 240) {
+      if (message.streaming) answer.dataset.mdRenderedAt = String(now);
+      answer.innerHTML = renderMarkdownText(messageText);
+      prepareChatMessageImages(answer);
+    }
+  } else {
+    answer.classList.remove('md-rendered');
+    delete answer.dataset.mdRenderedAt;
+    answer.textContent = messageText;
+  }
   answer.classList.toggle('is-streaming', Boolean(message.streaming));
 
   const meta = $('.message-meta', row);
@@ -417,6 +465,24 @@ async function completeChat(session) {
 }
 
 function handleMessageAction(event) {
+  const mdCopyButton = event.target.closest('.md-image-copy');
+  if (mdCopyButton) {
+    copyTextToClipboard(mdCopyButton.dataset.mdCopy || '').then((copied) => {
+      showToast(copied ? '已复制图片 Markdown 语法。' : '复制失败，请重试。', copied ? 'info' : 'error');
+    });
+    return;
+  }
+  const mdPreview = event.target.closest('.md-image-preview');
+  if (mdPreview && !mdPreview.closest('.md-image')?.classList.contains('is-error')) {
+    const url = safeMediaUrl(mdPreview.dataset.mdImage);
+    if (url) {
+      openMediaPreview({
+        items: [{ url, title: 'Markdown 图片', meta: '对话插图', kind: 'image' }],
+        returnFocus: mdPreview
+      });
+    }
+    return;
+  }
   const button = event.target.closest('[data-message-action]');
   if (button && event.type === 'keydown') return;
   if (!button) {

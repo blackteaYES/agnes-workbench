@@ -6,7 +6,7 @@
 
 **一个浏览器里的多模态 AI 创作工作台 · 无框架 · 无打包器 · 开箱即用**
 
-[![version](https://img.shields.io/badge/version-2.25.6-blue)](https://github.com/blackteaYES/agnes-workbench)
+[![version](https://img.shields.io/badge/version-2.26.3-blue)](https://github.com/blackteaYES/agnes-workbench)
 ![pure JavaScript](https://img.shields.io/badge/pure%20JavaScript-no%20framework%20%7C%20no%20build-brightgreen)
 ![deploy](https://img.shields.io/badge/deploy-any%20static%20host-orange)
 ![data](https://img.shields.io/badge/data-stays%20local-green)
@@ -31,7 +31,7 @@ Agnes-工作台把**文本对话、图像生成、视频生成和作品管理**�
 
 | 模块 | 能力 |
 |---|---|
-| 💬 文本对话 | OpenAI 风格流式输出、`reasoning_content` 思考过程、思考模式、多会话、消息编辑与重发、图像理解 |
+| 💬 文本对话 | OpenAI 风格流式输出、`reasoning_content` 思考过程、思考模式、多会话、消息编辑与重发、图像理解；对话消息默认按 Markdown 排版渲染（输入框工具栏与设置面板均可开关），Markdown 图片直接展示、可点击预览，加载失败显示占位 |
 | 🖼️ 图像生成 | 文生图 / 图生图 / 多图合成，尺寸、比例、风格预设、随机灵感与定向提示词优化 |
 | 🎬 视频生成 | 文生视频 / 图生视频 / 关键帧动画，限流退避轮询任务状态，可手动刷新 |
 | 🗂️ 作品管理 | 图像 / 视频筛选、删除、下载、本地缓存与重新缓存、备份导入导出 |

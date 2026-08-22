@@ -197,7 +197,9 @@ function bindEvents() {
   $('#chat-max-tokens').addEventListener('change', (event) => { state.ui.chat.maxTokens = Number(event.target.value); saveState(); });
   $('#chat-thinking').addEventListener('change', (event) => { state.ui.chat.thinking = event.target.checked; saveState(); renderChat(); });
   $('#chat-thinking-hint').addEventListener('click', toggleChatThinkingFromHint);
+  $('#chat-markdown-hint').addEventListener('click', toggleChatMarkdownFromHint);
   $('#chat-auto-fullscreen').addEventListener('change', (event) => { state.ui.chat.autoFullscreen = event.target.checked; saveState(); });
+  $('#chat-render-markdown').addEventListener('change', (event) => { state.ui.chat.renderMarkdown = event.target.checked; saveState(); renderChat(); });
   $('#chat-fullscreen-toggle').addEventListener('click', toggleChatFullscreen);
   $('#image-fullscreen-toggle').addEventListener('click', () => toggleModeFullscreen('image'));
   $('#video-fullscreen-toggle').addEventListener('click', () => toggleModeFullscreen('video'));
@@ -256,6 +258,7 @@ function syncUiControls() {
   $('#chat-max-tokens').value = String(state.ui.chat.maxTokens);
   $('#chat-thinking').checked = Boolean(state.ui.chat.thinking);
   $('#chat-auto-fullscreen').checked = Boolean(state.ui.chat.autoFullscreen);
+  $('#chat-render-markdown').checked = state.ui.chat.renderMarkdown !== false;
   updateChatStatusHints();
   $('#video-frame-rate').value = String(state.ui.video.frameRate);
   $('#video-negative-prompt').value = state.ui.video.negativePrompt || '';

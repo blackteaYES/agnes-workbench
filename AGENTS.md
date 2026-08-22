@@ -6,7 +6,7 @@
 
 - `index.html`：四种主模式（chat / image / video / works）、顶栏、Inspector、设置中心以及静态弹窗结构。
 - `app.js`：薄启动入口和页面事件装配，入口为 `document.addEventListener('DOMContentLoaded', init)`。
-- `assets/js/`：按职责拆分的经典脚本，依次包含核心状态、存储、通用 UI、设置、API、聊天、生成共用逻辑、图像、视频和作品。
+- `assets/js/`：按职责拆分的经典脚本，依次包含核心状态、存储、通用 UI、设置、API、Markdown 渲染、聊天、生成共用逻辑、图像、视频和作品。`markdown.js` 是零依赖的安全渲染器：输入整体转义后再做语法转换，用户与助手消息均按开关渲染；Markdown 图片渲染为可预览的 `<img>` 资源（SVG 也仅以图片资源方式显示，绝不作为文本插入 DOM），加载失败显示占位，图片附带复制原始 `![alt](url)` 语法的按钮；语言标记为 `markdown` / `md` 的围栏代码块内容按 Markdown 递归渲染。
 - `assets/css/`：按原始级联顺序拆分的主题、布局、功能区、弹窗、预览和响应式样式。
 - `assets/vendor/`、`assets/fonts/`：本地 Lucide 和字体资源，正式部署和双击运行不依赖第三方脚本或字体 CDN。
 - `config/prompt-examples.json`：文生图案例配置，只用于文生图模式。

@@ -6,7 +6,7 @@
 
 **A multimodal AI creation workbench in your browser · no framework · no bundler · works out of the box**
 
-[![version](https://img.shields.io/badge/version-2.25.6-blue)](https://github.com/blackteaYES/agnes-workbench)
+[![version](https://img.shields.io/badge/version-2.26.3-blue)](https://github.com/blackteaYES/agnes-workbench)
 ![pure JavaScript](https://img.shields.io/badge/pure%20JavaScript-no%20framework%20%7C%20no%20build-brightgreen)
 ![deploy](https://img.shields.io/badge/deploy-any%20static%20host-orange)
 ![data](https://img.shields.io/badge/data-stays%20local-green)
@@ -33,7 +33,7 @@ It is for anyone who wants one lightweight entry point for multimodal creation i
 
 | Module | Capabilities |
 |---|---|
-| 💬 Chat | OpenAI-style streaming output, `reasoning_content` thinking process, thinking mode, multiple sessions, message editing and resending, image understanding |
+| 💬 Chat | OpenAI-style streaming output, `reasoning_content` thinking process, thinking mode, multiple sessions, message editing and resending, image understanding; chat messages render as Markdown by default (toggle from the composer toolbar or the settings panel), with inline Markdown images, click-to-preview and a placeholder on load failure |
 | 🖼️ Image | Text-to-image / image-to-image / multi-image composite; size, ratio and style presets, random inspiration and targeted prompt optimization |
 | 🎬 Video | Text-to-video / image-to-video / keyframe animation; rate-limit-aware backoff polling with manual refresh |
 | 🗂️ Works | Image/video filtering, deletion, download, local caching and re-caching, backup import and export |
